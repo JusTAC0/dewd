@@ -815,25 +815,23 @@ function triggerAgent(name){
   var pfx=name==='trendsetter'?'ts':name==='sysana'?'sa':'ds';
   var color=name==='trendsetter'?'var(--no)':name==='sysana'?'var(--np)':'var(--ng)';
 
-  /* set streamingAgent BEFORE switchView so loadReport won't flash old/error state */
+  /* mark as streaming — do this before touching rpt-body so any in-flight loadReport is blocked */
   streamingAgent=name;
 
-  /* switch to Intel tab, select this agent's report */
-  switchView('intel');
+  /* pre-load the live streaming panel in Intel (hidden until user navigates there) */
   activeReport=name;
   document.querySelectorAll('.rtab').forEach(function(x){x.classList.remove('on')});
   var tab=document.querySelector('.rtab[data-r="'+name+'"]');
   if(tab)tab.classList.add('on');
-
-  /* live streaming panel */
+  delete reportCache[name];  /* clear stale cache so navigating to Intel shows live stream, not old report */
   gel('rpt-body').innerHTML=
     '<div style="font-family:var(--mono);font-size:var(--t-xs);color:'+color+';letter-spacing:.08em;margin-bottom:10px">▶ RUNNING — '+esc(agentLabel[name].toUpperCase())+'</div>'+
     '<div id="rpt-stream" style="font-family:var(--mono);font-size:var(--t-sm);line-height:1.75;color:var(--tx);white-space:pre-wrap;min-height:80px"></div>';
 
-  /* mark fuel bar */
+  /* mark fuel bar — stay on current tab */
   var fb=gel(pfx+'-fuel');if(fb)fb.className='fuel-bar fuel-run';
   var se=gel(pfx+'-status');if(se){se.textContent='RUNNING';se.style.color=color;}
-  pushFeed(name,agentLabel[name]+' streaming live');
+  pushFeed(name,agentLabel[name]+' running…');
 
   fetch('/api/agents/'+api+'/run/stream',{method:'POST'})
   .then(function(r){
@@ -850,7 +848,7 @@ function triggerAgent(name){
             var d=JSON.parse(line.slice(6));
             if(d.msg&&target&&!full)target.textContent=d.msg;
             if(d.chunk){full+=d.chunk;if(target)target.textContent=full;}
-            if(d.done){streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();}
+            if(d.done){streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();switchView('intel');}
             if(d.error&&target){streamingAgent=null;target.textContent='[Error: '+d.error+']';}
           }catch(e){}
         });
@@ -873,6 +871,7 @@ function triggerAgent(name){
           loadReport(name);
           loadAgent(name);
           if(name==='sysana')loadSparkline();
+          switchView('intel');
         }
       }).catch(function(){ setTimeout(poll,5000); });
     }
