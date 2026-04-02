@@ -859,7 +859,7 @@ function triggerAgent(name){
             var t=gel('rpt-stream');  /* always look up live — survives tab switches */
             if(d.msg&&t&&!full)t.textContent=d.msg;
             if(d.chunk){full+=d.chunk;streamingContent=full;if(t)t.textContent=full;}
-            if(d.done){streamingContent='';streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();switchView('intel');}
+            if(d.done){streamingContent='';streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();pushFeed(name,agentLabel[name]+' report ready');}
             if(d.error){streamingContent='';streamingAgent=null;if(t)t.textContent='[Error: '+d.error+']';}
           }catch(e){}
         });
@@ -882,7 +882,7 @@ function triggerAgent(name){
           loadReport(name);
           loadAgent(name);
           if(name==='sysana')loadSparkline();
-          switchView('intel');
+          pushFeed(name,agentLabel[name]+' report ready');
         }
       }).catch(function(){ setTimeout(poll,5000); });
     }
