@@ -345,10 +345,12 @@ def _delete_gmail(uid):
 # ── Background scheduler ──────────────────────────────────────────────────────
 
 def _build_next_run(start: int, interval: int) -> str:
-    """Return ISO timestamp of the next scheduled run for a given start hour + interval."""
+    """Return ISO timestamp of the next scheduled run, respecting the sleep window."""
+    sleep_window = set(range(2, start))
+    all_hours    = {(start + i * interval) % 24 for i in range(24 // interval)}
+    hours  = sorted(all_hours - sleep_window)
     now_et = datetime.now(_ET)
     today  = now_et.date()
-    hours  = sorted({(start + i * interval) % 24 for i in range(24 // interval)})
     for h in hours:
         candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
         if candidate > now_et:

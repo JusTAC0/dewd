@@ -476,10 +476,12 @@ def _write_status(state: str):
 _ET = ZoneInfo("America/New_York")
 
 def _next_run() -> str:
+    sleep_window = set(range(2, SYS_ANALYZER_START_HOUR))
+    all_hours    = {(SYS_ANALYZER_START_HOUR + i * SYS_ANALYZER_INTERVAL_HRS) % 24
+                    for i in range(24 // SYS_ANALYZER_INTERVAL_HRS)}
+    hours  = sorted(all_hours - sleep_window)
     now_et = datetime.now(_ET)
     today  = now_et.date()
-    hours  = sorted({(SYS_ANALYZER_START_HOUR + i * SYS_ANALYZER_INTERVAL_HRS) % 24
-                     for i in range(24 // SYS_ANALYZER_INTERVAL_HRS)})
     for h in hours:
         candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
         if candidate > now_et:

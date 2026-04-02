@@ -13,11 +13,12 @@ import os
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 import anthropic
 
-from config import ANTHROPIC_API_KEY, DATA_DIR, DEV_SCOUT_INTERVAL_HRS
+from config import ANTHROPIC_API_KEY, DATA_DIR, DEV_SCOUT_INTERVAL_HRS, DEV_SCOUT_START_HOUR
 
 try:
     from notify import send_alert as _ntfy
@@ -328,8 +329,21 @@ def _write_status(state: str):
         pass
 
 
+_ET = ZoneInfo("America/New_York")
+
 def _next_run() -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=DEV_SCOUT_INTERVAL_HRS)).isoformat()
+    sleep_window = set(range(2, DEV_SCOUT_START_HOUR))
+    all_hours    = {(DEV_SCOUT_START_HOUR + i * DEV_SCOUT_INTERVAL_HRS) % 24
+                    for i in range(24 // DEV_SCOUT_INTERVAL_HRS)}
+    hours  = sorted(all_hours - sleep_window)
+    now_et = datetime.now(_ET)
+    today  = now_et.date()
+    for h in hours:
+        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
+        if candidate > now_et:
+            return candidate.isoformat()
+    tomorrow = today + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
 
 
 def run() -> dict:

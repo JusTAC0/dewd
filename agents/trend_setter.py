@@ -14,11 +14,12 @@ import os
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 import anthropic
 
-from config import ANTHROPIC_API_KEY, DATA_DIR
+from config import ANTHROPIC_API_KEY, DATA_DIR, TREND_SETTER_START_HOUR, TREND_SETTER_INTERVAL_HRS
 
 SONNET_MODEL = "claude-sonnet-4-6"
 AGENTS_DIR   = os.path.join(DATA_DIR, "agents")
@@ -55,7 +56,8 @@ WORLD_KEYWORDS = [
     "autonomous", "drone", "satellite", "fusion", "battery",
 ]
 
-SCHEDULE_HOURS = [4, 8, 12, 16, 20]
+_ET = ZoneInfo("America/New_York")
+_SLEEP_END = TREND_SETTER_START_HOUR  # no runs before this ET hour (sleep window 2am→start)
 
 
 # ── Reddit ────────────────────────────────────────────────────────────────────
@@ -319,15 +321,18 @@ def _write_status(state: str):
 
 
 def _next_scheduled_run() -> str:
-    now   = datetime.now(timezone.utc)
-    today = now.date()
-    for h in sorted(SCHEDULE_HOURS):
-        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=timezone.utc)
-        if candidate > now:
+    sleep_window = set(range(2, _SLEEP_END))
+    all_hours    = {(TREND_SETTER_START_HOUR + i * TREND_SETTER_INTERVAL_HRS) % 24
+                    for i in range(24 // TREND_SETTER_INTERVAL_HRS)}
+    hours = sorted(all_hours - sleep_window)
+    now_et = datetime.now(_ET)
+    today  = now_et.date()
+    for h in hours:
+        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
+        if candidate > now_et:
             return candidate.isoformat()
     tomorrow = today + timedelta(days=1)
-    return datetime(tomorrow.year, tomorrow.month, tomorrow.day,
-                    sorted(SCHEDULE_HOURS)[0], 0, 0, tzinfo=timezone.utc).isoformat()
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
 
 
 def run() -> dict:
