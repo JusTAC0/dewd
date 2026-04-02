@@ -571,7 +571,7 @@ function applyLayout(name,manual){
     gel('p-'+right).classList.add('on');
     activeView=right;
     if(right==='chat')loadConvo();
-    if(right==='intel')loadReport(activeReport);
+    if(right==='intel'&&!(streamingAgent&&streamingAgent===activeReport))loadReport(activeReport);
   } else {
     document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('on')});
     gel('p-'+activeView).classList.add('on');
@@ -601,7 +601,8 @@ function switchView(v){
   if(activeLayout==='bridge')gel('p-status').classList.add('on');
   gel('p-'+v).classList.add('on');
   if(v==='chat')loadConvo();
-  if(v==='intel')loadReport(activeReport);
+  /* skip loadReport if the active report is currently streaming — the live UI is already in place */
+  if(v==='intel'&&!(streamingAgent&&streamingAgent===activeReport))loadReport(activeReport);
 }
 document.addEventListener('keydown',function(e){
   if(e.target===gel('cinput'))return;
@@ -971,8 +972,8 @@ function loadReport(name){
   if(reportCache[name]&&streamingAgent!==name)gel('rpt-body').innerHTML=reportCache[name];
   fetch('/api/agents/'+api).then(function(r){return r.json()}).then(function(d){
     var html=_renderReport(name,d);
-    reportCache[name]=html;
-    if(activeReport===name&&streamingAgent!==name)gel('rpt-body').innerHTML=html;
+    if(d.status!=='running')reportCache[name]=html;
+    if(activeReport===name&&streamingAgent!==name&&d.status!=='running')gel('rpt-body').innerHTML=html;
   }).catch(function(){});
 }
 
