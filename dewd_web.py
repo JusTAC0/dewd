@@ -17,7 +17,7 @@ import re as _re
 import threading
 from email.header import decode_header as _decode_header
 from html.parser import HTMLParser as _HTMLParser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 _ET = ZoneInfo("America/New_York")
@@ -344,6 +344,19 @@ def _delete_gmail(uid):
 
 # ── Background scheduler ──────────────────────────────────────────────────────
 
+def _build_next_run(start: int, interval: int) -> str:
+    """Return ISO timestamp of the next scheduled run for a given start hour + interval."""
+    now_et = datetime.now(_ET)
+    today  = now_et.date()
+    hours  = sorted({(start + i * interval) % 24 for i in range(24 // interval)})
+    for h in hours:
+        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
+        if candidate > now_et:
+            return candidate.isoformat()
+    tomorrow = today + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
+
+
 def _build_schedule(start: int, interval: int) -> frozenset:
     """Return the set of ET hours an agent should run.
     Runs every `interval` hours starting at `start`.
@@ -379,8 +392,10 @@ def _scheduler_loop():
                     _hours_ran.add(key)
                     with _running_agents_lock:
                         already = agent in _running_agents
+                        if not already:
+                            _running_agents.add(agent)
                     if not already:
-                        threading.Thread(target=_run_agent, args=(agent,), daemon=True).start()
+                        threading.Thread(target=_run_agent_guarded, args=(agent,), daemon=True).start()
 
         time.sleep(60)
 
@@ -555,13 +570,25 @@ def api_stream():
 _KNOWN_AGENTS = ("trend_setter", "system_analyzer", "dev_scout")
 
 
+def _atomic_write_json(path: str, data: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 @app.route("/api/agents/<name>")
 @login_required
 def api_agent_result(name):
     if name not in _KNOWN_AGENTS:
         return jsonify({"error": "unknown agent"}), 404
     path = os.path.join(AGENTS_DIR, f"{name}.json")
-    return jsonify(_read_json(path, {"status": "never_run", "report": None}))
+    data = _read_json(path, {"status": "never_run", "report": None})
+    # _running_agents is the authoritative live state — override JSON if mismatched
+    with _running_agents_lock:
+        if name in _running_agents:
+            data["status"] = "running"
+    return jsonify(data)
 
 
 @app.route("/api/weather")
@@ -627,8 +654,13 @@ def api_agent_run_stream(name):
     """SSE endpoint — streams agent analysis live as it's generated."""
     if name not in _KNOWN_AGENTS:
         return jsonify({"error": "unknown agent"}), 404
+    with _running_agents_lock:
+        if name in _running_agents:
+            return jsonify({"ok": False, "message": f"{name} already running"}), 409
+        _running_agents.add(name)
 
     def generate():
+        output_file = None
         try:
             if name == "trend_setter":
                 from agents.trend_setter import (
@@ -636,6 +668,7 @@ def api_agent_run_stream(name):
                     analyze_stream, _build_top_posts,
                     _write_status, _next_scheduled_run, OUTPUT_FILE,
                 )
+                output_file = OUTPUT_FILE
                 _write_status("running")
                 yield f"data: {json.dumps({'msg': 'Fetching Reddit posts…'})}\n\n"
                 ai_posts    = gather_ai_posts()
@@ -657,14 +690,14 @@ def api_agent_run_stream(name):
                     "top_posts":  top,
                     "next_run":   _next_scheduled_run(),
                 }
-                with open(OUTPUT_FILE, "w") as f:
-                    json.dump(result, f, indent=2)
+                _atomic_write_json(OUTPUT_FILE, result)
 
             elif name == "system_analyzer":
                 from agents.system_analyzer import (
                     collect_all, analyze_stream, _append_history,
                     _check_alerts, _write_status, OUTPUT_FILE,
                 )
+                output_file = OUTPUT_FILE
                 _write_status("running")
                 yield f"data: {json.dumps({'msg': 'Collecting system telemetry…'})}\n\n"
                 raw = collect_all()
@@ -679,6 +712,7 @@ def api_agent_run_stream(name):
                     "status":       "ok",
                     "ran_at":       raw["collected_at"],
                     "report":       full,
+                    "next_run":     _build_next_run(SYS_ANALYZER_START_HOUR, SYS_ANALYZER_INTERVAL_HRS),
                     "raw_snapshot": {
                         "hardware":           raw["hardware"],
                         "active_connections": raw["active_connections"][:20],
@@ -686,8 +720,7 @@ def api_agent_run_stream(name):
                         "wifi":               raw["wifi"],
                     },
                 }
-                with open(OUTPUT_FILE, "w") as f:
-                    json.dump(result, f, indent=2)
+                _atomic_write_json(OUTPUT_FILE, result)
 
             elif name == "dev_scout":
                 from agents.dev_scout import (
@@ -697,6 +730,7 @@ def api_agent_run_stream(name):
                     from notify import send_alert as _ntfy
                 except Exception:
                     def _ntfy(*a, **kw): return False
+                output_file = OUTPUT_FILE
                 _write_status("running")
                 yield f"data: {json.dumps({'msg': 'Scanning GitHub · HN · PyPI · RSS…'})}\n\n"
                 signals = gather()
@@ -727,13 +761,27 @@ def api_agent_run_stream(name):
                     "packages":  signals["packages"],
                     "next_run":  _next_run(),
                 }
-                with open(OUTPUT_FILE, "w") as f:
-                    json.dump(result, f, indent=2)
+                _atomic_write_json(OUTPUT_FILE, result)
 
             yield f"data: {json.dumps({'done': True})}\n\n"
 
         except Exception as e:
+            # Write error status to file so dashboard shows "error" not stuck "running"
+            if output_file:
+                try:
+                    existing = _read_json(output_file, {})
+                    existing.update({
+                        "status":  "error",
+                        "error":   str(e),
+                        "ran_at":  datetime.now(timezone.utc).isoformat(),
+                    })
+                    _atomic_write_json(output_file, existing)
+                except Exception:
+                    pass
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            with _running_agents_lock:
+                _running_agents.discard(name)
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
