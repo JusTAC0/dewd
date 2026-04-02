@@ -11,11 +11,12 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, DATA_DIR, SYS_HISTORY_MAX
+from config import ANTHROPIC_API_KEY, DATA_DIR, SYS_HISTORY_MAX, SYS_ANALYZER_START_HOUR, SYS_ANALYZER_INTERVAL_HRS
 
 try:
     from notify import send_alert as _ntfy
@@ -472,6 +473,21 @@ def _write_status(state: str):
         pass
 
 
+_ET = ZoneInfo("America/New_York")
+
+def _next_run() -> str:
+    now_et = datetime.now(_ET)
+    today  = now_et.date()
+    hours  = sorted({(SYS_ANALYZER_START_HOUR + i * SYS_ANALYZER_INTERVAL_HRS) % 24
+                     for i in range(24 // SYS_ANALYZER_INTERVAL_HRS)})
+    for h in hours:
+        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
+        if candidate > now_et:
+            return candidate.isoformat()
+    tomorrow = today + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
+
+
 def run() -> dict:
     os.makedirs(AGENTS_DIR, exist_ok=True)
     _write_status("running")
@@ -484,6 +500,7 @@ def run() -> dict:
             "status":       "ok",
             "ran_at":       raw["collected_at"],
             "report":       report,
+            "next_run":     _next_run(),
             "raw_snapshot": {
                 "hardware":           raw["hardware"],
                 "active_connections": raw["active_connections"][:20],
@@ -493,10 +510,11 @@ def run() -> dict:
         }
     except Exception as e:
         result = {
-            "status": "error",
-            "ran_at": datetime.now(timezone.utc).isoformat(),
-            "error":  str(e),
-            "report": f"Analysis failed: {e}",
+            "status":   "error",
+            "ran_at":   datetime.now(timezone.utc).isoformat(),
+            "error":    str(e),
+            "report":   f"Analysis failed: {e}",
+            "next_run": _next_run(),
         }
     _atomic_write(OUTPUT_FILE, result)
     return result
