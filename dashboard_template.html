@@ -556,7 +556,7 @@ function bld(s){
 
 /* STATE */
 var activeView='status', activeReport='devscout', feedEvs=[], activeLayout='panels';
-var reportCache={}, streamingAgent=null;
+var reportCache={}, streamingAgent=null, streamingContent='';
 
 function fmtNextRun(iso){
   if(!iso)return'—';
@@ -830,10 +830,10 @@ function triggerAgent(name){
 
   /* pre-load the live streaming panel in Intel (hidden until user navigates there) */
   activeReport=name;
+  delete reportCache[name];  /* clear stale cache so navigating to Intel shows live stream, not old report */
   document.querySelectorAll('.rtab').forEach(function(x){x.classList.remove('on')});
   var tab=document.querySelector('.rtab[data-r="'+name+'"]');
   if(tab)tab.classList.add('on');
-  delete reportCache[name];  /* clear stale cache so navigating to Intel shows live stream, not old report */
   gel('rpt-body').innerHTML=
     '<div style="font-family:var(--mono);font-size:var(--t-xs);color:'+color+';letter-spacing:.08em;margin-bottom:10px">▶ RUNNING — '+esc(agentLabel[name].toUpperCase())+'</div>'+
     '<div id="rpt-stream" style="font-family:var(--mono);font-size:var(--t-sm);line-height:1.75;color:var(--tx);white-space:pre-wrap;min-height:80px"></div>';
@@ -846,7 +846,7 @@ function triggerAgent(name){
   fetch('/api/agents/'+api+'/run/stream',{method:'POST'})
   .then(function(r){
     var reader=r.body.getReader(),dec=new TextDecoder(),buf='',full='';
-    var target=gel('rpt-stream');
+    streamingContent='';
     function pump(){
       return reader.read().then(function(x){
         if(x.done)return;
@@ -856,10 +856,11 @@ function triggerAgent(name){
           if(!line.startsWith('data: '))return;
           try{
             var d=JSON.parse(line.slice(6));
-            if(d.msg&&target&&!full)target.textContent=d.msg;
-            if(d.chunk){full+=d.chunk;if(target)target.textContent=full;}
-            if(d.done){streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();switchView('intel');}
-            if(d.error&&target){streamingAgent=null;target.textContent='[Error: '+d.error+']';}
+            var t=gel('rpt-stream');  /* always look up live — survives tab switches */
+            if(d.msg&&t&&!full)t.textContent=d.msg;
+            if(d.chunk){full+=d.chunk;streamingContent=full;if(t)t.textContent=full;}
+            if(d.done){streamingContent='';streamingAgent=null;delete reportCache[name];loadReport(name);loadAgent(name);if(name==='sysana')loadSparkline();switchView('intel');}
+            if(d.error){streamingContent='';streamingAgent=null;if(t)t.textContent='[Error: '+d.error+']';}
           }catch(e){}
         });
         return pump();
@@ -890,13 +891,23 @@ function triggerAgent(name){
 }
 
 /* REPORTS */
+function _activateReport(name){
+  activeReport=name;
+  document.querySelectorAll('.rtab').forEach(function(x){x.classList.remove('on')});
+  var tab=document.querySelector('.rtab[data-r="'+name+'"]');
+  if(tab)tab.classList.add('on');
+  if(streamingAgent&&streamingAgent===name){
+    /* switching to the tab whose agent is actively streaming — restore live UI */
+    var color=name==='trendsetter'?'var(--no)':name==='sysana'?'var(--np)':'var(--ng)';
+    gel('rpt-body').innerHTML=
+      '<div style="font-family:var(--mono);font-size:var(--t-xs);color:'+color+';letter-spacing:.08em;margin-bottom:10px">▶ RUNNING — '+esc(agentLabel[name].toUpperCase())+'</div>'+
+      '<div id="rpt-stream" style="font-family:var(--mono);font-size:var(--t-sm);line-height:1.75;color:var(--tx);white-space:pre-wrap;min-height:80px">'+esc(streamingContent)+'</div>';
+  } else {
+    loadReport(name);
+  }
+}
 document.querySelectorAll('.rtab').forEach(function(t){
-  t.addEventListener('click',function(){
-    activeReport=this.dataset.r;
-    document.querySelectorAll('.rtab').forEach(function(x){x.classList.remove('on')});
-    this.classList.add('on');
-    loadReport(activeReport);
-  });
+  t.addEventListener('click',function(){_activateReport(this.dataset.r);});
 });
 
 /* Intel swipe gesture */
@@ -916,11 +927,7 @@ document.querySelectorAll('.rtab').forEach(function(t){
     if(idx<0)return;
     var next=dx<0?Math.min(idx+1,INTEL_TABS.length-1):Math.max(idx-1,0);
     if(next===idx)return;
-    activeReport=INTEL_TABS[next];
-    document.querySelectorAll('.rtab').forEach(function(x){x.classList.remove('on')});
-    var tab=document.querySelector('.rtab[data-r="'+activeReport+'"]');
-    if(tab)tab.classList.add('on');
-    loadReport(activeReport);
+    _activateReport(INTEL_TABS[next]);
   },{passive:true});
 })();
 function _renderReport(name,d){
