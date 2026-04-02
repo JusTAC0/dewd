@@ -557,6 +557,17 @@ function bld(s){
 var activeView='status', activeReport='devscout', feedEvs=[], activeLayout='panels';
 var reportCache={}, streamingAgent=null;
 
+function fmtNextRun(iso){
+  if(!iso)return'—';
+  var diff=Math.round((new Date(iso)-Date.now())/1000);
+  if(diff<=0)return'soon';
+  if(diff<60)return'in '+diff+'s';
+  var h=Math.floor(diff/3600), m=Math.floor((diff%3600)/60);
+  if(h>=24){var d=Math.floor(h/24);return'in '+d+'d '+(h%24)+'h';}
+  if(h>0)return'in '+h+'h '+(m>0?m+'m':'');
+  return'in '+m+'m';
+}
+
 /* LAYOUTS */
 function applyLayout(name,manual){
   var app=gel('app');if(!app)return;
@@ -793,7 +804,7 @@ function loadAgent(name){
     setText(pfx+'-status',String(d.status||'—').toUpperCase());
     var se=gel(pfx+'-status');if(se)se.style.color=stClr;
     setText(pfx+'-ran',d.ran_at?new Date(d.ran_at).toLocaleString():'Never');
-    setText(pfx+'-next',d.next_run?new Date(d.next_run).toLocaleString():'—');
+    setText(pfx+'-next',fmtNextRun(d.next_run));
     if(name==='trendsetter')setText('ts-posts',d.post_count!==undefined?d.post_count:'—');
     var fb=gel(pfx+'-fuel');
     if(fb)fb.className='fuel-bar'+(d.status==='running'?' fuel-run':'');
@@ -912,7 +923,7 @@ function _renderReport(name,d){
     '<div class="rmt"><div class="rmt-k">Last Run</div>'+
       '<div class="rmt-v" style="font-size:.82rem">'+esc(d.ran_at?new Date(d.ran_at).toLocaleString():'Never')+'</div></div>'+
     '<div class="rmt"><div class="rmt-k">Next Run</div>'+
-      '<div class="rmt-v" style="font-size:.82rem">'+esc(d.next_run?new Date(d.next_run).toLocaleString():'—')+'</div></div>'+
+      '<div class="rmt-v" style="font-size:.82rem">'+esc(fmtNextRun(d.next_run))+'</div></div>'+
   '</div>';
   var cards='';
   if(name==='devscout'&&d.top_finds&&d.top_finds.length){
