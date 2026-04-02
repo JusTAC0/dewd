@@ -452,6 +452,14 @@ def _append_history(hw: dict):
         print(f"[system_analyzer] history append failed: {e}")
 
 
+def _atomic_write(path: str, data: dict):
+    """Write JSON atomically — temp file + rename so a killed process never leaves a blank file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def _write_status(state: str):
     os.makedirs(AGENTS_DIR, exist_ok=True)
     try:
@@ -459,7 +467,7 @@ def _write_status(state: str):
         if os.path.exists(OUTPUT_FILE):
             with open(OUTPUT_FILE) as f: existing = json.load(f)
         existing["status"] = state
-        with open(OUTPUT_FILE, "w") as f: json.dump(existing, f, indent=2)
+        _atomic_write(OUTPUT_FILE, existing)
     except Exception:
         pass
 
@@ -490,8 +498,7 @@ def run() -> dict:
             "error":  str(e),
             "report": f"Analysis failed: {e}",
         }
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(result, f, indent=2)
+    _atomic_write(OUTPUT_FILE, result)
     return result
 
 

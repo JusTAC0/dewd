@@ -30,20 +30,29 @@ AI_SUBREDDITS = [
     "ClaudeAI", "LocalLLaMA", "artificial", "singularity",
     "ChatGPTCoding", "MachineLearning", "AItools",
     "LLMDevs", "PromptEngineering", "OpenAI",
+    "datascience", "deeplearning", "Robotics", "cybersecurity", "hardware",
 ]
 
-WORLD_SUBREDDITS = ["technology", "programming", "Futurology", "worldnews", "science"]
+WORLD_SUBREDDITS = [
+    "technology", "programming", "Futurology", "worldnews", "science",
+    "business", "economics", "geopolitics",
+]
 
 # RSS feeds: (name, url, limit)
 AI_RSS_FEEDS = [
-    ("Hugging Face Blog",  "https://huggingface.co/blog/feed.xml",        6),
-    ("arXiv cs.AI+cs.CL",  "https://arxiv.org/rss/cs.AI+cs.CL",          8),
+    ("Hugging Face Blog",    "https://huggingface.co/blog/feed.xml",                          6),
+    ("arXiv cs.AI+cs.CL",   "https://arxiv.org/rss/cs.AI+cs.CL",                             8),
+    ("MIT Tech Review AI",   "https://www.technologyreview.com/feed/",                        5),
+    ("VentureBeat AI",       "https://venturebeat.com/category/ai/feed/",                     6),
+    ("Wired",                "https://www.wired.com/feed/rss",                                5),
 ]
 
 WORLD_KEYWORDS = [
     "ai", "artificial intelligence", "robot", "automation", "tech", "software",
     "hardware", "startup", "science", "energy", "climate", "security", "hack",
     "breakthrough", "research", "data", "quantum", "space", "biotech",
+    "semiconductor", "chip", "nvidia", "regulation", "legislation", "cyber",
+    "autonomous", "drone", "satellite", "fusion", "battery",
 ]
 
 SCHEDULE_HOURS = [4, 8, 12, 16, 20]
@@ -83,7 +92,9 @@ def gather_ai_posts() -> list[dict]:
             time.sleep(0.4)
 
     for query in ("Claude AI project", "built with Claude", "Claude API tool",
-                  "Anthropic Claude", "LLM agent", "AI assistant open source"):
+                  "Anthropic Claude", "LLM agent", "AI assistant open source",
+                  "multimodal AI", "AI agent framework", "open source LLM 2025",
+                  "fine tuning LLM"):
         all_posts.extend(_fetch_search(query))
         time.sleep(0.4)
 
@@ -288,6 +299,13 @@ def analyze_stream(ai_posts: list[dict], world_posts: list[dict], rss_items: lis
 
 # ── Scheduling ────────────────────────────────────────────────────────────────
 
+def _atomic_write(path: str, data: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def _write_status(state: str):
     os.makedirs(AGENTS_DIR, exist_ok=True)
     try:
@@ -295,7 +313,7 @@ def _write_status(state: str):
         if os.path.exists(OUTPUT_FILE):
             with open(OUTPUT_FILE) as f: existing = json.load(f)
         existing["status"] = state
-        with open(OUTPUT_FILE, "w") as f: json.dump(existing, f, indent=2)
+        _atomic_write(OUTPUT_FILE, existing)
     except Exception:
         pass
 
@@ -346,8 +364,7 @@ def run() -> dict:
             "next_run": _next_scheduled_run(),
         }
 
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(result, f, indent=2)
+    _atomic_write(OUTPUT_FILE, result)
     return result
 
 

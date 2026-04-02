@@ -35,10 +35,12 @@ HEADERS = {
 
 DEWD_STACK = {
     "packages": ["anthropic", "openai-whisper", "faster-whisper", "piper-tts",
-                 "openwakeword", "pvporcupine", "flask", "requests"],
+                 "openwakeword", "pvporcupine", "flask", "requests",
+                 "httpx", "numpy", "torch"],
     "topics":   ["voice-assistant", "speech-to-text", "text-to-speech",
                  "wake-word", "raspberry-pi", "edge-ai", "local-llm",
-                 "on-device-ai", "llm-inference", "whisper-cpp"],
+                 "on-device-ai", "llm-inference", "whisper-cpp",
+                 "ai-assistant", "speech-synthesis", "onnxruntime", "raspberry-pi-5"],
     "keywords": ["whisper", "piper tts", "wake word detection", "voice assistant raspberry pi",
                  "claude voice", "offline voice assistant", "edge speech"],
 }
@@ -50,6 +52,10 @@ RSS_FEEDS = [
     ("TechCrunch AI",     "https://techcrunch.com/category/artificial-intelligence/feed/"),
     ("Real Python",       "https://realpython.com/atom.xml"),
     ("PyPI Updates",      "https://pypi.org/rss/updates.xml"),
+    ("GitHub Blog",       "https://github.blog/feed/"),
+    ("Python Insider",    "https://feeds.feedburner.com/PythonInsider"),
+    ("InfoQ AI/ML",       "https://feed.infoq.com/ai-ml-data-eng/"),
+    ("Simon Willison",    "https://simonwillison.net/atom/everything/"),
 ]
 
 
@@ -169,13 +175,18 @@ def gather() -> dict:
     print("  [dev_scout] gathering GitHub…")
     gh_trending = []
     for kw in ["voice assistant raspberry pi", "wake word detection python",
-                "faster-whisper", "piper tts", "local llm voice", "claude api python"]:
+                "faster-whisper", "piper tts", "local llm voice", "claude api python",
+                "whisper cpp python", "onnxruntime speech", "real-time transcription",
+                "speech recognition python 2024", "edge ai inference arm",
+                "raspberry pi 5 ai", "local tts python", "llm tool use agent"]:
         gh_trending.extend(_gh_recently_active(kw, days=21, n=4))
         time.sleep(0.4)
 
     gh_top = []
     for topic in ["voice-assistant", "speech-recognition", "text-to-speech", "edge-ai",
-                  "local-llm", "on-device-ai", "llm-inference", "whisper-cpp"]:
+                  "local-llm", "on-device-ai", "llm-inference", "whisper-cpp",
+                  "ai-agent", "onnxruntime", "raspberry-pi-5", "speech-synthesis",
+                  "wake-word", "automatic-speech-recognition", "natural-language-processing"]:
         gh_top.extend(_gh_search_repos(f"topic:{topic} language:python", n=5))
         time.sleep(0.4)
 
@@ -184,7 +195,10 @@ def gather() -> dict:
     for q in ["voice assistant", "whisper speech", "local LLM edge", "raspberry pi AI",
                "claude API", "text to speech open source", "agentic AI",
                "MCP model context protocol", "on-device LLM",
-               "AI agent", "machine learning release", "open source AI"]:
+               "AI agent", "machine learning release", "open source AI",
+               "speech recognition open source", "LLM tool calling", "anthropic claude",
+               "real time transcription", "audio AI", "python AI library",
+               "edge inference", "small language model", "voice cloning open source"]:
         hn_posts.extend(_hn_search(q, days=14, n=4))
         time.sleep(0.3)
 
@@ -295,6 +309,13 @@ def analyze_stream(signals: dict):
             yield text
 
 
+def _atomic_write(path: str, data: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def _write_status(state: str):
     os.makedirs(AGENTS_DIR, exist_ok=True)
     try:
@@ -302,7 +323,7 @@ def _write_status(state: str):
         if os.path.exists(OUTPUT_FILE):
             with open(OUTPUT_FILE) as f: existing = json.load(f)
         existing["status"] = state
-        with open(OUTPUT_FILE, "w") as f: json.dump(existing, f, indent=2)
+        _atomic_write(OUTPUT_FILE, existing)
     except Exception:
         pass
 
@@ -351,8 +372,7 @@ def run() -> dict:
             "next_run": _next_run(),
         }
 
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(result, f, indent=2)
+    _atomic_write(OUTPUT_FILE, result)
     return result
 
 

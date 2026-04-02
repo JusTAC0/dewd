@@ -803,6 +803,9 @@ function triggerAgent(name){
   var pfx=name==='trendsetter'?'ts':name==='sysana'?'sa':'ds';
   var color=name==='trendsetter'?'var(--no)':name==='sysana'?'var(--np)':'var(--ng)';
 
+  /* set streamingAgent BEFORE switchView so loadReport won't flash old/error state */
+  streamingAgent=name;
+
   /* switch to Intel tab, select this agent's report */
   switchView('intel');
   activeReport=name;
@@ -811,7 +814,6 @@ function triggerAgent(name){
   if(tab)tab.classList.add('on');
 
   /* live streaming panel */
-  streamingAgent=name;
   gel('rpt-body').innerHTML=
     '<div style="font-family:var(--mono);font-size:var(--t-xs);color:'+color+';letter-spacing:.08em;margin-bottom:10px">▶ RUNNING — '+esc(agentLabel[name].toUpperCase())+'</div>'+
     '<div id="rpt-stream" style="font-family:var(--mono);font-size:var(--t-sm);line-height:1.75;color:var(--tx);white-space:pre-wrap;min-height:80px"></div>';
@@ -845,9 +847,24 @@ function triggerAgent(name){
     }
     return pump();
   }).catch(function(){
-    streamingAgent=null;
-    var t=gel('rpt-stream');if(t)t.textContent='[Stream failed — check service logs]';
-    loadAgent(name);
+    /* connection dropped mid-stream — agent likely still running server-side.
+       poll every 3s until status is no longer 'running', then show the result. */
+    var t=gel('rpt-stream');
+    if(t)t.textContent='Connection lost — waiting for result…';
+    function poll(){
+      fetch('/api/agents/'+api).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='running'){
+          setTimeout(poll,3000);
+        } else {
+          streamingAgent=null;
+          delete reportCache[name];
+          loadReport(name);
+          loadAgent(name);
+          if(name==='sysana')loadSparkline();
+        }
+      }).catch(function(){ setTimeout(poll,5000); });
+    }
+    setTimeout(poll,3000);
   });
 }
 
