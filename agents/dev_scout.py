@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 import anthropic
 
-from config import ANTHROPIC_API_KEY, DATA_DIR, DEV_SCOUT_INTERVAL_HOURS
+from config import ANTHROPIC_API_KEY, DATA_DIR, DEV_SCOUT_INTERVAL_HRS
 
 try:
     from notify import send_alert as _ntfy
@@ -329,7 +329,7 @@ def _write_status(state: str):
 
 
 def _next_run() -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=DEV_SCOUT_INTERVAL_HOURS)).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(hours=DEV_SCOUT_INTERVAL_HRS)).isoformat()
 
 
 def run() -> dict:
