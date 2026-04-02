@@ -6,7 +6,7 @@ and broader world/tech signals. Two tracks:
   - Claude/AI track  — r/ClaudeAI, r/LocalLLaMA, r/artificial, etc.
   - World signals    — r/technology, r/programming, r/Futurology, etc.
 
-Runs on schedule (4am, 8am, 12pm, 4pm, 8pm UTC) or on-demand.
+Runs every 4h from 6am ET (sleep 2am–6am) or on-demand.
 Writes results to data/agents/trend_setter.json
 """
 import json

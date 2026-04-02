@@ -447,7 +447,7 @@ nav{flex-shrink:0;height:62px;display:flex;
           <div class="row"><span class="rk">Status</span><span class="rv" id="ds-status">—</span></div>
           <div class="row"><span class="rk">Last Run</span><span class="rv" id="ds-ran" style="font-size:.8rem">—</span></div>
           <div class="row"><span class="rk">Next Run</span><span class="rv" id="ds-next" style="font-size:.8rem">—</span></div>
-          <div class="row"><span class="rk">Schedule</span><span class="rv">8am 12pm 4pm 8pm 12am ET</span></div>
+          <div class="row"><span class="rk">Interval</span><span class="rv">every 4h · sleep 2–8am</span></div>
           <div class="fuel-bar" id="ds-fuel"><div class="fuel-fill" style="background:var(--ng)"></div></div>
           <button class="run-btn" style="border-color:var(--ng);color:var(--ng)"
             onclick="triggerAgent('devscout')">▶ START RUN</button>
@@ -459,6 +459,7 @@ nav{flex-shrink:0;height:62px;display:flex;
           <div class="row"><span class="rk">Status</span><span class="rv" id="ts-status">—</span></div>
           <div class="row"><span class="rk">Last Run</span><span class="rv" id="ts-ran" style="font-size:.8rem">—</span></div>
           <div class="row"><span class="rk">Next Run</span><span class="rv" id="ts-next" style="font-size:.8rem">—</span></div>
+          <div class="row"><span class="rk">Interval</span><span class="rv">every 4h · sleep 2–6am</span></div>
           <div class="row"><span class="rk">Posts</span><span class="rv" id="ts-posts">—</span></div>
           <div class="fuel-bar" id="ts-fuel"><div class="fuel-fill" style="background:var(--no)"></div></div>
           <button class="run-btn" style="border-color:var(--no);color:var(--no)"
@@ -471,7 +472,7 @@ nav{flex-shrink:0;height:62px;display:flex;
           <div class="row"><span class="rk">Status</span><span class="rv" id="sa-status">—</span></div>
           <div class="row"><span class="rk">Last Run</span><span class="rv" id="sa-ran" style="font-size:.8rem">—</span></div>
           <div class="row"><span class="rk">Next Run</span><span class="rv" id="sa-next" style="font-size:.8rem">—</span></div>
-          <div class="row"><span class="rk">Schedule</span><span class="rv">6am 10am 2pm 6pm 10pm ET</span></div>
+          <div class="row"><span class="rk">Interval</span><span class="rv">every 4h · sleep 2–6am</span></div>
           <div class="fuel-bar" id="sa-fuel"><div class="fuel-fill" style="background:var(--np)"></div></div>
           <div style="position:relative;height:48px;margin-top:10px;opacity:.7">
             <canvas id="sa-sparkline"></canvas>
@@ -1149,9 +1150,9 @@ setInterval(refreshAgents,20000);
 setInterval(loadWeather,600000);   /* refresh weather every 10 min */
 setInterval(loadSparkline,120000); /* refresh sparkline every 2 min */
 pushFeed('dewd','SHIN-DEWD · Mission Control online');
-pushFeed('trendsetter','Trend Setter: 6am 10am 2pm 6pm 10pm ET');
-pushFeed('sysana','SysAna: 6am 10am 2pm 6pm 10pm ET');
-pushFeed('devscout','Dev Scout: 8am 12pm 4pm 8pm 12am ET');
+pushFeed('trendsetter','Trend Setter · every 4h from 6am ET');
+pushFeed('sysana','SysAna · every 4h from 6am ET');
+pushFeed('devscout','Dev Scout · every 4h from 8am ET');
 </script>
 </body>
 </html>
