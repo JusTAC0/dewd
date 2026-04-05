@@ -14,6 +14,18 @@ import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY_TURNS, LOG_FILE, OWNER_NAME
 from tools import TOOL_DEFINITIONS, execute_tool
 
+MAX_TOOL_ITERATIONS = 10
+
+
+def _log_usage(usage) -> None:
+    try:
+        cache_read    = getattr(usage, "cache_read_input_tokens",    0) or 0
+        cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        print(f"[brain] tokens — in:{usage.input_tokens} out:{usage.output_tokens} "
+              f"cache_read:{cache_read} cache_created:{cache_created}")
+    except Exception:
+        pass
+
 SYSTEM_PROMPT = f"""You are DEWD — the AI of this facility, running on a Raspberry Pi 5 owned by {OWNER_NAME}.
 
 Communicate with calm British formality, dry wit, and quiet confidence. \
@@ -65,35 +77,48 @@ class DewdBrain:
 
     def process(self, user_text: str) -> str:
         self._add_message("user", user_text)
-        response_text = self._call(self.history)
+        try:
+            response_text = self._call(self.history)
+        except Exception:
+            self.history.pop()  # roll back the user message so history stays balanced
+            raise
         self._add_message("assistant", response_text)
         self._trim_history()
         return response_text
 
     def process_stream(self, user_text: str, image_b64: str = None):
         self._add_message("user", user_text)
+        _history_snapshot = len(self.history)  # mark rollback point
         working_messages = list(self.history)
 
         if image_b64 and image_b64.startswith("data:"):
             try:
-                media_type = image_b64.split(";")[0].split(":")[1]
-                b64_data   = image_b64.split(",")[1]
-                working_messages[-1] = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
-                        {"type": "text",  "text": user_text},
-                    ],
-                }
-            except Exception:
-                pass
+                header, b64_data = image_b64.split(",", 1)
+                media_type = header.split(";")[0].split(":", 1)[1]
+                if media_type and b64_data:
+                    working_messages[-1] = {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
+                            {"type": "text",  "text": user_text},
+                        ],
+                    }
+            except (ValueError, IndexError):
+                pass  # malformed data URL — send text only
 
-        full_response = ""
+        full_response  = ""
+        tool_iteration = 0
 
         while True:
+            if tool_iteration >= MAX_TOOL_ITERATIONS:
+                warn = "\n\n*[Tool loop limit reached — stopping.]*"
+                full_response += warn
+                yield warn
+                break
+
             with self.client.messages.stream(
                 model=CLAUDE_MODEL,
-                max_tokens=1024,
+                max_tokens=2048,
                 system=_SYSTEM_CACHED,
                 tools=_TOOLS_CACHED,
                 messages=working_messages,
@@ -103,10 +128,19 @@ class DewdBrain:
                     yield text
                 final = stream.get_final_message()
 
+            if final.stop_reason == "max_tokens":
+                warn = "\n\n*[Response truncated — ask me to continue.]*"
+                print(f"[brain] WARNING: stream truncated at max_tokens")
+                full_response += warn
+                yield warn
+                break
+
             if final.stop_reason == "end_turn":
+                _log_usage(final.usage)
                 break
 
             if final.stop_reason == "tool_use":
+                tool_iteration += 1
                 working_messages.append({"role": "assistant", "content": final.content})
                 tool_results = []
                 for block in final.content:
@@ -120,27 +154,43 @@ class DewdBrain:
                 working_messages.append({"role": "user", "content": tool_results})
                 continue
 
+            print(f"[brain] unexpected stop_reason: {final.stop_reason!r}")
             break
 
-        self._add_message("assistant", full_response)
+        if full_response:
+            self._add_message("assistant", full_response)
+        else:
+            # Nothing was yielded — roll back the user message too
+            self.history = self.history[:_history_snapshot - 1]
         self._trim_history()
 
     def _call(self, messages: list[dict]) -> str:
         working_messages = list(messages)
+        tool_iteration   = 0
 
         while True:
+            if tool_iteration >= MAX_TOOL_ITERATIONS:
+                return "[Tool loop limit reached — stopping.]"
+
             response = self.client.messages.create(
                 model=CLAUDE_MODEL,
-                max_tokens=1024,
+                max_tokens=2048,
                 system=_SYSTEM_CACHED,
                 tools=_TOOLS_CACHED,
                 messages=working_messages,
             )
 
+            if response.stop_reason == "max_tokens":
+                print(f"[brain] WARNING: response truncated at max_tokens")
+                text = self._extract_text(response)
+                return text + "\n\n*[Response truncated — ask me to continue.]*"
+
             if response.stop_reason == "end_turn":
+                _log_usage(response.usage)
                 return self._extract_text(response)
 
             if response.stop_reason == "tool_use":
+                tool_iteration += 1
                 working_messages.append({"role": "assistant", "content": response.content})
                 tool_results = []
                 for block in response.content:

@@ -2,8 +2,10 @@
 """
 DEWD Mission Control — served at http://<pi-ip>:8080
 Text-only dashboard: chat via browser → brain.py → Claude API.
-Runs background scheduler for Trend Setter, System Analyzer, Dev Scout agents.
+Runs background scheduler for Daymark, Frontier, and Smith agents.
+Background stats loop records hardware history and fires threshold alerts.
 """
+import hmac
 import json
 import os
 import time
@@ -15,6 +17,7 @@ import email
 import email.utils
 import re as _re
 import threading
+import queue as _queue
 from email.header import decode_header as _decode_header
 from html.parser import HTMLParser as _HTMLParser
 from datetime import datetime, timedelta, timezone
@@ -23,17 +26,17 @@ from zoneinfo import ZoneInfo
 _ET = ZoneInfo("America/New_York")
 from functools import wraps
 from flask import Flask, Response, jsonify, render_template_string, request, session, redirect
+from agents.common import atomic_write as _atomic_write
 
 from config import (
     DATA_DIR, STATUS_FILE, LOG_FILE,
     GMAIL_ADDRESS, GMAIL_APP_PASSWORD, GMAIL_MAX_MSGS,
     MAX_LOG_ENTRIES,
-    TREND_SETTER_START_HOUR, TREND_SETTER_INTERVAL_HRS,
-    SYS_ANALYZER_START_HOUR, SYS_ANALYZER_INTERVAL_HRS,
-    DEV_SCOUT_START_HOUR, DEV_SCOUT_INTERVAL_HRS,
-    AGENTS_DIR,
+    DAYMARK_HOURS, FRONTIER_HOURS,
+    AGENTS_DIR, CALENDAR_FILE,
     WEATHER_LOCATION,
     SECRET_KEY, DASHBOARD_PASSWORD,
+    NTFY_URL, NTFY_TOPIC,
 )
 
 try:
@@ -55,6 +58,22 @@ os.makedirs(AGENTS_DIR, exist_ok=True)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
+
+_login_attempts: dict = {}   # ip -> [timestamp, ...]
+_LOGIN_MAX    = 5            # max attempts
+_LOGIN_WINDOW = 900          # 15-minute window in seconds
+
+def _login_allowed(ip: str) -> bool:
+    now = time.time()
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < _LOGIN_WINDOW]
+    if attempts:
+        _login_attempts[ip] = attempts
+    elif ip in _login_attempts:
+        del _login_attempts[ip]
+    return len(attempts) < _LOGIN_MAX
+
+def _login_record(ip: str):
+    _login_attempts.setdefault(ip, []).append(time.time())
 
 _LOGIN_HTML = """<!DOCTYPE html>
 <html>
@@ -82,6 +101,7 @@ _LOGIN_HTML = """<!DOCTYPE html>
       font-weight:700;letter-spacing:.12em;cursor:pointer}
     button:active{background:rgba(247,169,61,.12)}
     .error{font-size:.65rem;letter-spacing:.1em;color:#ce4458;margin-top:16px}
+    .locked{font-size:.65rem;letter-spacing:.1em;color:#fb923c;margin-top:16px}
   </style>
 </head>
 <body>
@@ -93,22 +113,18 @@ _LOGIN_HTML = """<!DOCTYPE html>
     <form method="post">
       <input type="password" name="password" autofocus autocomplete="off" inputmode="numeric">
       <button type="submit">ACCESS</button>
-      {% if error %}<div class="error">INVALID CODE — TRY AGAIN</div>{% endif %}
+      {% if locked %}<div class="locked">TOO MANY ATTEMPTS — WAIT 15 MIN</div>
+      {% elif error %}<div class="error">INVALID CODE — TRY AGAIN</div>{% endif %}
     </form>
   </div>
 </body>
 </html>"""
 
 
-def _is_mobile():
-    ua = request.headers.get("User-Agent", "")
-    return bool(_re.search(r"Mobile|Android|iPhone|iPad|webOS|BlackBerry|IEMobile", ua, _re.I))
-
-
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if _is_mobile() or session.get("authenticated"):
+        if session.get("authenticated"):
             return f(*args, **kwargs)
         if request.path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
@@ -118,12 +134,20 @@ def login_required(f):
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    if not DASHBOARD_PASSWORD:
+        # No password configured — block all access rather than allow blank auth
+        return render_template_string(_LOGIN_HTML, error=False, locked=True), 503
     if request.method == "POST":
-        if request.form.get("password") == DASHBOARD_PASSWORD:
+        ip = request.remote_addr or "unknown"
+        if not _login_allowed(ip):
+            return render_template_string(_LOGIN_HTML, error=True, locked=True)
+        if hmac.compare_digest(request.form.get("password", ""), DASHBOARD_PASSWORD):
             session["authenticated"] = True
+            _login_attempts.pop(ip, None)  # clear failed attempts on success
             return redirect("/")
-        return render_template_string(_LOGIN_HTML, error=True)
-    return render_template_string(_LOGIN_HTML, error=False)
+        _login_record(ip)
+        return render_template_string(_LOGIN_HTML, error=True, locked=False)
+    return render_template_string(_LOGIN_HTML, error=False, locked=False)
 
 
 @app.route("/logout")
@@ -146,8 +170,13 @@ def _system_stats():
     try:
         temp = subprocess.check_output(["vcgencmd", "measure_temp"], text=True).strip()
         stats["temp"] = temp.replace("temp=", "")
+        try:
+            stats["temp_c"] = float(stats["temp"].replace("'C", "").replace("°C", ""))
+        except Exception:
+            stats["temp_c"] = None
     except Exception:
         stats["temp"] = "—"
+        stats["temp_c"] = None
     try:
         with open("/proc/meminfo") as f:
             mem = {l.split(":")[0]: int(l.split()[1]) for l in f}
@@ -173,7 +202,8 @@ def _system_stats():
             c1 = f.readline().split()
         idle0, total0 = int(c0[4]), sum(int(x) for x in c0[1:])
         idle1, total1 = int(c1[4]), sum(int(x) for x in c1[1:])
-        stats["cpu_pct"] = round(100.0 * (1 - (idle1 - idle0) / (total1 - total0)), 1)
+        delta = total1 - total0
+        stats["cpu_pct"] = round(100.0 * (1 - (idle1 - idle0) / delta), 1) if delta > 0 else 0
     except Exception:
         stats["cpu_pct"] = 0
     try:
@@ -219,6 +249,7 @@ def _decode_str(raw):
 def _fetch_gmail():
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         return {"configured": False, "unread": 0, "emails": []}
+    mail = None
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=10)
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -252,31 +283,54 @@ def _fetch_gmail():
                 "ts":      ts_iso,
                 "unread":  uid in unread_set,
             })
-        mail.logout()
         return {"configured": True, "unread": len(unread_ids), "emails": msgs}
     except Exception as e:
         return {"configured": True, "error": str(e), "unread": 0, "emails": []}
+    finally:
+        if mail:
+            try: mail.logout()
+            except Exception: pass
 
 
 def _strip_html(html_str):
     class _S(_HTMLParser):
+        _SKIP_TAGS = {"style", "script", "head"}
+        _BLOCK_OPEN = {"p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "blockquote", "pre"}
+        _BLOCK_CLOSE = {"p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"}
         def __init__(self):
-            super().__init__(); self.parts = []
-        def handle_data(self, d): self.parts.append(d)
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self._depth = 0  # nesting depth inside skip tags
+        def handle_data(self, d):
+            if self._depth == 0:
+                self.parts.append(d)
         def handle_starttag(self, tag, attrs):
-            if tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"):
+            if tag in self._SKIP_TAGS:
+                self._depth += 1
+                return
+            if self._depth == 0 and tag in self._BLOCK_OPEN:
                 self.parts.append("\n")
-    s = _S(); s.feed(html_str)
+        def handle_endtag(self, tag):
+            if tag in self._SKIP_TAGS:
+                self._depth = max(0, self._depth - 1)
+                return
+            if self._depth == 0 and tag in self._BLOCK_CLOSE:
+                self.parts.append("\n")
+    s = _S()
+    s.feed(html_str)
     text = "".join(s.parts)
-    text = _re.sub(r"\n{3,}", "\n\n", text)
+    text = _re.sub(r"[ \t]+", " ", text)           # collapse inline whitespace
+    text = _re.sub(r" *\n *", "\n", text)           # trim spaces around newlines
+    text = _re.sub(r"\n{3,}", "\n\n", text)         # max two consecutive blank lines
     return text.strip()
 
 
 def _fetch_gmail_body(uid):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         return {"error": "not configured"}
-    if not uid.isdigit():
+    if not (uid.isascii() and uid.isdigit()):
         return {"error": "invalid uid"}
+    mail = None
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -318,17 +372,21 @@ def _fetch_gmail_body(uid):
                 body = text
         if not body and html_fallback:
             body = _strip_html(html_fallback)
-        mail.logout()
         return {"subject": subject, "from": sender, "ts": ts_iso, "body": body[:6000]}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if mail:
+            try: mail.logout()
+            except Exception: pass
 
 
 def _delete_gmail(uid):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         return {"error": "not configured"}
-    if not uid.isdigit():
+    if not (uid.isascii() and uid.isdigit()):
         return {"error": "invalid uid"}
+    mail = None
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -336,46 +394,32 @@ def _delete_gmail(uid):
         mail.copy(uid.encode(), "[Gmail]/Trash")
         mail.store(uid.encode(), "+FLAGS", "\\Deleted")
         mail.expunge()
-        mail.logout()
         return {"ok": True}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if mail:
+            try: mail.logout()
+            except Exception: pass
 
 
 # ── Background scheduler ──────────────────────────────────────────────────────
 
-def _build_next_run(start: int, interval: int) -> str:
-    """Return ISO timestamp of the next scheduled run, respecting the sleep window."""
-    sleep_window = set(range(2, start))
-    all_hours    = {(start + i * interval) % 24 for i in range(24 // interval)}
-    hours  = sorted(all_hours - sleep_window)
-    now_et = datetime.now(_ET)
-    today  = now_et.date()
-    for h in hours:
-        candidate = datetime(today.year, today.month, today.day, h, 0, 0, tzinfo=_ET)
-        if candidate > now_et:
-            return candidate.isoformat()
-    tomorrow = today + timedelta(days=1)
-    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
-
-
-def _build_schedule(start: int, interval: int) -> frozenset:
-    """Return the set of ET hours an agent should run.
-    Runs every `interval` hours starting at `start`.
-    Sleep window (2am → start) is excluded automatically."""
-    sleep_window = set(range(2, start)) if start > 2 else set()
-    hours = {(start + i * interval) % 24 for i in range(24 // interval)}
-    return frozenset(hours - sleep_window)
-
+# Schedules: Daymark 3x daily, Frontier 2x daily.
+# Frontier always triggers Smith on completion.
+# Smith fires the morning brief if it runs within SMITH_BRIEF_WINDOW.
 
 _AGENT_SCHEDULES = {
-    "trend_setter":    _build_schedule(TREND_SETTER_START_HOUR,  TREND_SETTER_INTERVAL_HRS),
-    "system_analyzer": _build_schedule(SYS_ANALYZER_START_HOUR,  SYS_ANALYZER_INTERVAL_HRS),
-    "dev_scout":       _build_schedule(DEV_SCOUT_START_HOUR,     DEV_SCOUT_INTERVAL_HRS),
+    "daymark":  frozenset(DAYMARK_HOURS),
+    "frontier": frozenset(FRONTIER_HOURS),
+    # smith has no fixed schedule — always triggered by frontier
 }
 
-_scheduler_lock = threading.Lock()
-_hours_ran: set = set()   # tracks (agent, et_date, et_hour) already fired
+_scheduler_lock  = threading.Lock()
+_hours_ran: set  = set()   # tracks (agent, et_date, et_hour) already fired
+
+_running_agents      : set = set()
+_running_agents_lock       = threading.Lock()
 
 
 def _scheduler_loop():
@@ -391,25 +435,27 @@ def _scheduler_loop():
             for agent, schedule in _AGENT_SCHEDULES.items():
                 key = (agent, et_date, et_hour)
                 if et_hour in schedule and key not in _hours_ran:
-                    _hours_ran.add(key)
                     with _running_agents_lock:
                         already = agent in _running_agents
                         if not already:
                             _running_agents.add(agent)
+                            _hours_ran.add(key)  # only mark ran if we actually start it
                     if not already:
-                        threading.Thread(target=_run_agent_guarded, args=(agent,), daemon=True).start()
+                        threading.Thread(
+                            target=_run_agent_guarded, args=(agent,), daemon=True
+                        ).start()
 
         time.sleep(60)
 
 
 def _run_agent(name: str):
     try:
-        if name == "trend_setter":
-            from agents.trend_setter import run
-        elif name == "system_analyzer":
-            from agents.system_analyzer import run
-        elif name == "dev_scout":
-            from agents.dev_scout import run
+        if name == "daymark":
+            from agents.daymark import run
+        elif name == "frontier":
+            from agents.frontier import run
+        elif name == "smith":
+            from agents.smith import run
         else:
             return
         print(f"[scheduler] running {name}…")
@@ -419,22 +465,131 @@ def _run_agent(name: str):
         print(f"[scheduler] {name} error: {e}")
 
 
-_running_agents: set = set()
-_running_agents_lock = threading.Lock()
-
-
 def _run_agent_guarded(name: str):
-    """Run agent and clear the running-lock when done."""
+    """Run agent and clear the running-lock when done.
+    Frontier always triggers Smith on completion."""
     try:
         _run_agent(name)
+        if name == "frontier":
+            with _running_agents_lock:
+                already = "smith" in _running_agents
+                if not already:
+                    _running_agents.add("smith")
+            if not already:
+                print("[scheduler] frontier complete — triggering smith")
+                threading.Thread(
+                    target=_run_agent_guarded, args=("smith",), daemon=True
+                ).start()
     finally:
         with _running_agents_lock:
             _running_agents.discard(name)
 
 
+# On startup, reset any agent left in "running" state by a previously killed process.
+def _reset_stale_running():
+    for name in ("daymark", "frontier", "smith"):
+        path = os.path.join(AGENTS_DIR, f"{name}.json")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            if d.get("status") == "running":
+                d["status"] = "error"
+                d.setdefault("report", "Agent interrupted — process was killed mid-run.")
+                _atomic_write(path, d)
+                print(f"[startup] cleared stale 'running' for {name}")
+        except Exception:
+            pass
+
+
+_reset_stale_running()
+
 # Start scheduler thread
 _sched_thread = threading.Thread(target=_scheduler_loop, daemon=True)
 _sched_thread.start()
+
+
+# ── Background stats loop ─────────────────────────────────────────────────────
+# Records hardware stats every 5 min and fires ntfy alerts on threshold breach.
+
+_STATS_HISTORY_FILE  = os.path.join(AGENTS_DIR, "stats_history.json")
+_STATS_INTERVAL      = 300   # seconds between recordings
+_STATS_MAX_ENTRIES   = 288   # 24h at 5-min intervals
+_ALERT_TEMP_C        = 80.0
+_ALERT_RAM_PCT       = 90.0
+_last_alert_ts: dict = {}    # alert_key -> last fired timestamp
+
+
+def _maybe_alert(key: str, title: str, body: str, cooldown_s: int = 3600):
+    """Send ntfy alert with cooldown to avoid repeat spam."""
+    if not NTFY_TOPIC:
+        return
+    now = time.time()
+    if now - _last_alert_ts.get(key, 0) < cooldown_s:
+        return
+    _last_alert_ts[key] = now
+    try:
+        requests.post(
+            f"{NTFY_URL}/{NTFY_TOPIC}",
+            data=body.encode(),
+            headers={"Title": title, "Priority": "high"},
+            timeout=8,
+        )
+    except Exception as e:
+        print(f"[stats] ntfy alert failed: {e}")
+
+
+def _stats_loop():
+    while True:
+        try:
+            stats = _system_stats()
+            entry = {
+                "ts":      datetime.now(timezone.utc).isoformat(),
+                "cpu_pct": stats.get("cpu_pct"),
+                "ram_pct": stats.get("ram_pct"),
+                "temp_c":  stats.get("temp_c"),
+                "disk_pct": stats.get("disk_pct"),
+            }
+
+            # Append to rolling history
+            try:
+                with open(_STATS_HISTORY_FILE) as f:
+                    history = json.load(f)
+                if not isinstance(history, list):
+                    history = []
+            except Exception:
+                history = []
+            history.append(entry)
+            if len(history) > _STATS_MAX_ENTRIES:
+                history = history[-_STATS_MAX_ENTRIES:]
+            _atomic_write(_STATS_HISTORY_FILE, history)
+
+            # Threshold alerts
+            temp_c = stats.get("temp_c") or 0.0
+            if isinstance(temp_c, (int, float)) and temp_c >= _ALERT_TEMP_C:
+                _maybe_alert(
+                    "temp_high",
+                    f"DEWD — Pi temp {temp_c:.1f}°C",
+                    f"Pi temperature is {temp_c:.1f}°C — above {_ALERT_TEMP_C}°C threshold.",
+                )
+
+            ram_pct = stats.get("ram_pct") or 0.0
+            if isinstance(ram_pct, (int, float)) and ram_pct >= _ALERT_RAM_PCT:
+                _maybe_alert(
+                    "ram_high",
+                    f"DEWD — RAM at {ram_pct:.0f}%",
+                    f"RAM usage is {ram_pct:.0f}% — above {_ALERT_RAM_PCT}% threshold.",
+                )
+
+        except Exception as e:
+            print(f"[stats] loop error: {e}")
+
+        time.sleep(_STATS_INTERVAL)
+
+
+_stats_thread = threading.Thread(target=_stats_loop, daemon=True)
+_stats_thread.start()
 
 
 # ── API routes ────────────────────────────────────────────────────────────────
@@ -512,8 +667,10 @@ def api_chat_stream():
 def _write_status(state: str):
     os.makedirs(DATA_DIR, exist_ok=True)
     try:
-        with open(STATUS_FILE, "w") as f:
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump({"state": state, "ts": datetime.now(timezone.utc).isoformat()}, f)
+        os.replace(tmp, STATUS_FILE)
     except Exception:
         pass
 
@@ -528,8 +685,10 @@ def _log_exchange(user_text: str, dewd_text: str):
             entries = []
         entries.append({"ts": datetime.now(timezone.utc).isoformat(), "user": user_text, "dewd": dewd_text})
         entries = entries[-MAX_LOG_ENTRIES:]
-        with open(LOG_FILE, "w") as f:
+        tmp = LOG_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(entries, f)
+        os.replace(tmp, LOG_FILE)
     except Exception:
         pass
 
@@ -552,6 +711,80 @@ def api_gmail_delete(uid):
     return jsonify(_delete_gmail(uid))
 
 
+# ── Calendar ──────────────────────────────────────────────────────────────────
+
+import uuid as _uuid
+
+def _load_calendar() -> list:
+    try:
+        with open(CALENDAR_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_calendar(events: list):
+    os.makedirs(os.path.dirname(CALENDAR_FILE), exist_ok=True)
+    tmp = CALENDAR_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(events, f, indent=2)
+    os.replace(tmp, CALENDAR_FILE)
+
+@app.route("/api/calendar")
+@login_required
+def api_calendar_get():
+    return jsonify(_load_calendar())
+
+@app.route("/api/calendar", methods=["POST"])
+@login_required
+def api_calendar_create():
+    d = request.get_json(silent=True) or {}
+    title = (d.get("title") or "").strip()
+    start = (d.get("start") or "").strip()
+    end   = (d.get("end")   or "").strip()
+    if not title or not start:
+        return jsonify({"error": "title and start required"}), 400
+    event = {
+        "uid":         str(_uuid.uuid4()),
+        "title":       title[:120],
+        "start":       start,
+        "end":         end or start,
+        "description": (d.get("description") or "")[:500],
+        "all_day":     bool(d.get("all_day", False)),
+        "color":       (d.get("color") or ""),
+    }
+    events = _load_calendar()
+    events.append(event)
+    _save_calendar(events)
+    return jsonify(event), 201
+
+@app.route("/api/calendar/<uid>", methods=["PUT"])
+@login_required
+def api_calendar_update(uid):
+    d = request.get_json(silent=True) or {}
+    events = _load_calendar()
+    for i, ev in enumerate(events):
+        if ev.get("uid") == uid:
+            if "title"       in d: events[i]["title"]       = (d["title"]       or "").strip()[:120]
+            if "start"       in d: events[i]["start"]       = (d["start"]       or "").strip()
+            if "end"         in d: events[i]["end"]         = (d["end"]         or "").strip()
+            if "description" in d: events[i]["description"] = (d["description"] or "")[:500]
+            if "all_day"     in d: events[i]["all_day"]     = bool(d["all_day"])
+            if "color"       in d: events[i]["color"]       = (d["color"]       or "")
+            _save_calendar(events)
+            return jsonify(events[i])
+    return jsonify({"error": "not found"}), 404
+
+@app.route("/api/calendar/<uid>", methods=["DELETE"])
+@login_required
+def api_calendar_delete(uid):
+    events = _load_calendar()
+    new_events = [ev for ev in events if ev.get("uid") != uid]
+    if len(new_events) == len(events):
+        return jsonify({"error": "not found"}), 404
+    _save_calendar(new_events)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/stream")
 @login_required
 def api_stream():
@@ -569,14 +802,7 @@ def api_stream():
 
 # ── Agent API routes ──────────────────────────────────────────────────────────
 
-_KNOWN_AGENTS = ("trend_setter", "system_analyzer", "dev_scout")
-
-
-def _atomic_write_json(path: str, data: dict):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+_KNOWN_AGENTS = ("daymark", "frontier", "smith")
 
 
 @app.route("/api/agents/<name>")
@@ -586,10 +812,13 @@ def api_agent_result(name):
         return jsonify({"error": "unknown agent"}), 404
     path = os.path.join(AGENTS_DIR, f"{name}.json")
     data = _read_json(path, {"status": "never_run", "report": None})
-    # _running_agents is the authoritative live state — override JSON if mismatched
+    # _running_agents is the authoritative live state — always wins over JSON
     with _running_agents_lock:
         if name in _running_agents:
             data["status"] = "running"
+        elif data.get("status") == "running":
+            # JSON says running but no active run in memory — process was killed mid-run
+            data["status"] = "error"
     return jsonify(data)
 
 
@@ -609,7 +838,8 @@ def api_weather():
         current = raw["current_condition"][0]
         days = []
         for d in raw.get("weather", [])[:3]:
-            desc = d.get("hourly", [{}])[4].get("weatherDesc", [{}])[0].get("value", "")
+            hourly = d.get("hourly") or []
+            desc = (hourly[4] if len(hourly) > 4 else hourly[-1] if hourly else {}).get("weatherDesc", [{}])[0].get("value", "")
             days.append({
                 "date":      d.get("date", ""),
                 "max_f":     d.get("maxtempF", ""),
@@ -629,12 +859,11 @@ def api_weather():
         return jsonify({"error": str(e)}), 502
 
 
-@app.route("/api/agents/system_analyzer/history")
+@app.route("/api/agents/stats/history")
 @login_required
-def api_sysana_history():
-    """Return rolling hardware history for sparkline charts."""
-    hist_file = os.path.join(AGENTS_DIR, "system_analyzer_history.json")
-    return jsonify(_read_json(hist_file, []))
+def api_stats_history():
+    """Return rolling hardware history (5-min intervals, 24h window) for sparkline charts."""
+    return jsonify(_read_json(_STATS_HISTORY_FILE, []))
 
 
 @app.route("/api/agents/<name>/run", methods=["POST"])
@@ -653,7 +882,14 @@ def api_agent_run(name):
 @app.route("/api/agents/<name>/run/stream", methods=["POST"])
 @login_required
 def api_agent_run_stream(name):
-    """SSE endpoint — streams agent analysis live as it's generated."""
+    """SSE endpoint — streams agent events to the browser.
+
+    The agent runs in its own daemon thread so closing the browser never
+    kills the run mid-flight.  Events are pushed into a queue; the HTTP
+    generator reads from the queue and forwards them.  When the browser
+    disconnects the generator exits but the agent thread keeps running
+    until it finishes and writes its JSON result file.
+    """
     if name not in _KNOWN_AGENTS:
         return jsonify({"error": "unknown agent"}), 404
     with _running_agents_lock:
@@ -661,138 +897,87 @@ def api_agent_run_stream(name):
             return jsonify({"ok": False, "message": f"{name} already running"}), 409
         _running_agents.add(name)
 
-    def generate():
-        output_file = None
+    q: _queue.Queue = _queue.Queue()
+    _SENTINEL = object()
+
+    def _agent_thread():
         try:
-            if name == "trend_setter":
-                from agents.trend_setter import (
-                    gather_ai_posts, gather_world_signals, gather_rss_signals,
-                    analyze_stream, _build_top_posts,
-                    _write_status, _next_scheduled_run, OUTPUT_FILE,
-                )
-                output_file = OUTPUT_FILE
-                _write_status("running")
-                yield f"data: {json.dumps({'msg': 'Fetching Reddit posts…'})}\n\n"
-                ai_posts    = gather_ai_posts()
-                world_posts = gather_world_signals()
-                yield f"data: {json.dumps({'msg': 'Fetching AI RSS feeds…'})}\n\n"
-                rss_items   = gather_rss_signals()
-                total = len(ai_posts) + len(world_posts)
-                yield f"data: {json.dumps({'msg': f'Analyzing {total} posts + RSS…'})}\n\n"
-                full = ""
-                for chunk in analyze_stream(ai_posts, world_posts, rss_items):
-                    full += chunk
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                top = _build_top_posts(ai_posts, 5) + _build_top_posts(world_posts, 3)
-                result = {
-                    "status":     "ok",
-                    "ran_at":     datetime.now(timezone.utc).isoformat(),
-                    "post_count": total,
-                    "report":     full,
-                    "top_posts":  top,
-                    "next_run":   _next_scheduled_run(),
-                }
-                _atomic_write_json(OUTPUT_FILE, result)
-
-            elif name == "system_analyzer":
-                from agents.system_analyzer import (
-                    collect_all, analyze_stream, _append_history,
-                    _check_alerts, _write_status, OUTPUT_FILE,
-                )
-                output_file = OUTPUT_FILE
-                _write_status("running")
-                yield f"data: {json.dumps({'msg': 'Collecting system telemetry…'})}\n\n"
-                raw = collect_all()
-                _append_history(raw["hardware"])
-                yield f"data: {json.dumps({'msg': 'Analyzing with Haiku…'})}\n\n"
-                full = ""
-                for chunk in analyze_stream(raw):
-                    full += chunk
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                _check_alerts(raw["hardware"], full)
-                result = {
-                    "status":       "ok",
-                    "ran_at":       raw["collected_at"],
-                    "report":       full,
-                    "next_run":     _build_next_run(SYS_ANALYZER_START_HOUR, SYS_ANALYZER_INTERVAL_HRS),
-                    "raw_snapshot": {
-                        "hardware":           raw["hardware"],
-                        "active_connections": raw["active_connections"][:20],
-                        "failed_logins":      raw["failed_logins"],
-                        "wifi":               raw["wifi"],
-                    },
-                }
-                _atomic_write_json(OUTPUT_FILE, result)
-
-            elif name == "dev_scout":
-                from agents.dev_scout import (
-                    gather, analyze_stream, _write_status, _next_run, OUTPUT_FILE,
-                )
-                try:
-                    from notify import send_alert as _ntfy
-                except Exception:
-                    def _ntfy(*a, **kw): return False
-                output_file = OUTPUT_FILE
-                _write_status("running")
-                yield f"data: {json.dumps({'msg': 'Scanning GitHub · HN · PyPI · RSS…'})}\n\n"
-                signals = gather()
-                yield f"data: {json.dumps({'msg': 'Analyzing with Sonnet…'})}\n\n"
-                full = ""
-                for chunk in analyze_stream(signals):
-                    full += chunk
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                if "CRITICAL" in full:
-                    _ntfy("Dev Scout — Critical Alert",
-                          "A critical upgrade or finding was detected. Check DEWD dashboard.",
-                          priority="high")
-                top_finds = []
-                for item in signals["github"][:6]:
-                    top_finds.append({"title": item["name"], "subtitle": item["description"],
-                                      "url": item["url"], "meta": f"★ {item['stars']}  {item['updated']}", "source": "github"})
-                for item in signals["hn"][:3]:
-                    top_finds.append({"title": item["title"], "subtitle": "",
-                                      "url": item["url"], "meta": f"▲ {item['points']}  💬 {item['comments']}", "source": "hn"})
-                for item in signals["rss"][:3]:
-                    top_finds.append({"title": item["title"], "subtitle": item["source"],
-                                      "url": item["url"], "meta": "RSS", "source": "rss"})
-                result = {
-                    "status":    "ok",
-                    "ran_at":    datetime.now(timezone.utc).isoformat(),
-                    "report":    full,
-                    "top_finds": top_finds,
-                    "packages":  signals["packages"],
-                    "next_run":  _next_run(),
-                }
-                _atomic_write_json(OUTPUT_FILE, result)
-
-            yield f"data: {json.dumps({'done': True})}\n\n"
-
+            if name == "daymark":
+                from agents.daymark import stream_run
+            elif name == "frontier":
+                from agents.frontier import stream_run
+            elif name == "smith":
+                from agents.smith import stream_run
+            else:
+                q.put({"error": "unknown agent"})
+                return
+            for event in stream_run():
+                q.put(event)
+            q.put({"done": True})
+            # Frontier always triggers Smith regardless of browser state
+            if name == "frontier":
+                with _running_agents_lock:
+                    already = "smith" in _running_agents
+                    if not already:
+                        _running_agents.add("smith")
+                if not already:
+                    print("[stream] frontier complete — triggering smith")
+                    threading.Thread(
+                        target=_run_agent_guarded, args=("smith",), daemon=True
+                    ).start()
         except Exception as e:
-            # Write error status to file so dashboard shows "error" not stuck "running"
-            if output_file:
-                try:
-                    existing = _read_json(output_file, {})
-                    existing.update({
-                        "status":  "error",
-                        "error":   str(e),
-                        "ran_at":  datetime.now(timezone.utc).isoformat(),
-                    })
-                    _atomic_write_json(output_file, existing)
-                except Exception:
-                    pass
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            q.put({"error": str(e)})
         finally:
             with _running_agents_lock:
                 _running_agents.discard(name)
+            q.put(_SENTINEL)
+
+    threading.Thread(target=_agent_thread, daemon=True).start()
+
+    def generate():
+        while True:
+            try:
+                item = q.get(timeout=30)
+            except _queue.Empty:
+                # keepalive comment keeps the connection alive on slow agents
+                yield ": keepalive\n\n"
+                continue
+            if item is _SENTINEL:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ── Notes ─────────────────────────────────────────────────────────────────────
+
+_NOTES_FILE = os.path.join(DATA_DIR, "notes.md")
+
+@app.route("/api/notes", methods=["GET"])
+@login_required
+def api_notes_get():
+    if os.path.exists(_NOTES_FILE):
+        with open(_NOTES_FILE, encoding="utf-8") as f:
+            return jsonify({"content": f.read()})
+    return jsonify({"content": ""})
+
+@app.route("/api/notes", methods=["POST"])
+@login_required
+def api_notes_post():
+    data = request.get_json(silent=True) or {}
+    content = data.get("content", "")[:500_000]  # 500 KB cap
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = _NOTES_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, _NOTES_FILE)
+    return jsonify({"ok": True})
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 _DASHBOARD_TMPL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard_template.html")
-DASHBOARD_HTML = open(_DASHBOARD_TMPL, encoding="utf-8").read()
 
 
 @app.route("/favicon.ico")
@@ -813,7 +998,10 @@ def favicon():
 @app.route("/")
 @login_required
 def dashboard():
-    return render_template_string(DASHBOARD_HTML)
+    from config import CLAUDE_MODEL
+    with open(_DASHBOARD_TMPL, encoding="utf-8") as _f:
+        html = _f.read()
+    return render_template_string(html, claude_model=CLAUDE_MODEL)
 
 
 if __name__ == "__main__":
@@ -824,11 +1012,16 @@ if __name__ == "__main__":
         with open(LOG_FILE, "w") as f:
             json.dump([], f)
 
+    if SECRET_KEY == "change-me-in-env":
+        print("⚠  WARNING: SECRET_KEY is default — set SECRET_KEY in .env")
+    if not DASHBOARD_PASSWORD:
+        print("⚠  WARNING: DASHBOARD_PASSWORD not set — dashboard will be inaccessible until set")
+
     print("━" * 54)
     print("  DEWD Mission Control  →  http://0.0.0.0:8080")
     print(f"  Brain: {'online' if _brain_ok else 'OFFLINE (check anthropic key)'}")
-    print(f"  Trend Setter:     every {TREND_SETTER_INTERVAL_HRS}h from {TREND_SETTER_START_HOUR}am ET  (sleep 2am–{TREND_SETTER_START_HOUR}am)")
-    print(f"  System Analyzer:  every {SYS_ANALYZER_INTERVAL_HRS}h from {SYS_ANALYZER_START_HOUR}am ET  (sleep 2am–{SYS_ANALYZER_START_HOUR}am)")
-    print(f"  Dev Scout:        every {DEV_SCOUT_INTERVAL_HRS}h from {DEV_SCOUT_START_HOUR}am ET  (sleep 2am–{DEV_SCOUT_START_HOUR}am)")
+    print(f"  Daymark:          7am · 1pm · 7pm ET")
+    print(f"  Frontier:         9am · 9pm ET  →  triggers Smith")
+    print(f"  Smith:            standby — triggers after each Frontier run")
     print("━" * 54)
     app.run(host="0.0.0.0", port=8080, threaded=True)

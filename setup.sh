@@ -1,65 +1,53 @@
 #!/usr/bin/env bash
 # DEWD Setup Script
-# Run once: bash setup.sh
+# Run once after cloning: bash setup.sh
 set -e
 
-DEWD_DIR="$HOME/.local/share/dewd"
-VOICES_DIR="$DEWD_DIR/voices"
-PIPER_DIR="$DEWD_DIR/piper"
-PIPER_VOICE="en_GB-alan-medium"
-PIPER_VERSION="2023.11.14-2"
+DEWD_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  DEWD Setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# ── System packages ──────────────────────────────────────────────────────────
-echo "[1/4] Installing system packages..."
-sudo apt-get update -qq
-sudo apt-get install -y -qq portaudio19-dev libportaudio2 ffmpeg alsa-utils
-
 # ── Python packages ──────────────────────────────────────────────────────────
-echo "[2/4] Installing Python packages..."
-pip3 install -q --break-system-packages -r "$(dirname "$0")/requirements.txt"
-
-# ── Piper TTS binary (arm64) ─────────────────────────────────────────────────
-echo "[3/4] Installing Piper TTS..."
-mkdir -p "$PIPER_DIR" "$VOICES_DIR"
-
-if [ ! -f "$PIPER_DIR/piper" ]; then
-    TMP=$(mktemp -d)
-    PIPER_URL="https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_aarch64.tar.gz"
-    echo "  Downloading Piper binary..."
-    wget -q --show-progress -O "$TMP/piper.tar.gz" "$PIPER_URL"
-    tar -xzf "$TMP/piper.tar.gz" -C "$PIPER_DIR" --strip-components=1
-    rm -rf "$TMP"
-    chmod +x "$PIPER_DIR/piper"
-    echo "  Piper installed at $PIPER_DIR/piper"
+echo "[1/3] Installing Python packages..."
+if [ -d "$DEWD_DIR/venv" ]; then
+    source "$DEWD_DIR/venv/bin/activate"
+    pip install -q -r "$DEWD_DIR/requirements.txt"
 else
-    echo "  Piper already installed — skipping."
+    python3 -m venv "$DEWD_DIR/venv"
+    source "$DEWD_DIR/venv/bin/activate"
+    pip install -q -r "$DEWD_DIR/requirements.txt"
 fi
 
-# ── Piper voice model ────────────────────────────────────────────────────────
-echo "[4/4] Downloading voice model ($PIPER_VOICE)..."
-HF_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium"
+# ── Data directory ───────────────────────────────────────────────────────────
+echo "[2/3] Creating data directory..."
+mkdir -p "$DEWD_DIR/data/agents"
+[ -f "$DEWD_DIR/data/status.json"       ] || echo '{"state":"standby","ts":""}' > "$DEWD_DIR/data/status.json"
+[ -f "$DEWD_DIR/data/conversation.json" ] || echo '[]'                           > "$DEWD_DIR/data/conversation.json"
+[ -f "$DEWD_DIR/data/calendar.json"     ] || echo '[]'                           > "$DEWD_DIR/data/calendar.json"
+[ -f "$DEWD_DIR/data/notes.json"        ] || echo '""'                           > "$DEWD_DIR/data/notes.json"
 
-if [ ! -f "$VOICES_DIR/${PIPER_VOICE}.onnx" ]; then
-    wget -q --show-progress -O "$VOICES_DIR/${PIPER_VOICE}.onnx" \
-        "${HF_BASE}/${PIPER_VOICE}.onnx"
-    wget -q --show-progress -O "$VOICES_DIR/${PIPER_VOICE}.onnx.json" \
-        "${HF_BASE}/${PIPER_VOICE}.onnx.json"
-    echo "  Voice model downloaded."
+# ── Environment file ─────────────────────────────────────────────────────────
+echo "[3/3] Checking environment..."
+if [ ! -f "$DEWD_DIR/.env" ]; then
+    cp "$DEWD_DIR/.env.example" "$DEWD_DIR/.env"
+    chmod 600 "$DEWD_DIR/.env"
+    echo "  Created .env from template — edit it and add your API keys before running."
 else
-    echo "  Voice model already present — skipping."
+    echo "  .env already exists — skipping."
 fi
-
-# ── Create data dir ──────────────────────────────────────────────────────────
-mkdir -p "$(dirname "$0")/data"
-echo '{"state":"standby","ts":""}' > "$(dirname "$0")/data/status.json"
-echo '[]' > "$(dirname "$0")/data/conversation.json"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Setup complete."
-echo "  Start DEWD:  python3 $(dirname "$0")/dewd_web.py"
+echo ""
+echo "  Next steps:"
+echo "  1. Edit .env and add your ANTHROPIC_API_KEY"
+echo "  2. (Optional) Add Gmail, weather, and ntfy settings to .env"
+echo "  3. (Optional) Copy known_services.example.txt to known_services.txt"
+echo "     and document your system's expected services"
+echo "  4. Run: source venv/bin/activate && python3 dewd_web.py"
+echo ""
+echo "  Dashboard: http://$(hostname -I | awk '{print $1}'):8080"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

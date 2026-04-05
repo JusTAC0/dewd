@@ -34,6 +34,7 @@ _FORBIDDEN = [
     r"\bpasswd\b", r"\bchpasswd\b",
     r"crontab\s+-[re]", r"/etc/cron", r"\.bashrc|\.bash_profile|\.profile",
     r"/dev/tcp", r"/dev/udp", r"\bnc\s.*-[el]", r"bash\s+-i",
+    r"/proc/self/environ", r"/proc/[^/]+/environ",
 ]
 
 _BLOCKED_PATHS = [
@@ -164,14 +165,17 @@ def _run_command(command: str) -> str:
     safe, reason = _is_safe(command)
     if not safe:
         return f"Refused. {reason}"
+    proc = subprocess.Popen(
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=_clean_env(),
+    )
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=15, env=_clean_env(),
-        )
-        output = (result.stdout + result.stderr).strip()
+        stdout, stderr = proc.communicate(timeout=15)
+        output = (stdout + stderr).strip()
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
         return "Command timed out after 15 seconds."
 
 
@@ -206,8 +210,9 @@ def _read_file(path: str) -> str:
     real = os.path.realpath(path)
     if not real.startswith(_HOME):
         return f"Access denied: only files under {_HOME} are readable."
+    basename = os.path.basename(real).lower()
     for blocked in _BLOCKED_PATHS:
-        if blocked.lower() in real.lower():
+        if blocked.lower() == basename or real.lower().endswith(os.sep + blocked.lower()):
             return f"Access denied: {os.path.basename(real)} is a protected file."
     try:
         with open(real, "r", errors="replace") as f:

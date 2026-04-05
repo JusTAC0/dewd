@@ -1,0 +1,11 @@
+KNOWN LEGITIMATE SERVICES ON THIS SYSTEM (do not flag as anomalies)
+Copy this file to known_services.txt and edit to match your system.
+known_services.txt is gitignored and never committed.
+
+- DEWD itself (python3 dewd_web.py): Flask dashboard on 0.0.0.0:8080. EXPECTED.
+- avahi-daemon: mDNS/zeroconf — port 5353 UDP. EXPECTED.
+
+SECURITY CONTROLS IN PLACE:
+- Describe your firewall rules, VPN setup, and any deliberate hardening steps here.
+- Smith reads this file to avoid flagging your known-good services as anomalies.
+- Add one bullet per expected service/process with a brief note on why it is present.

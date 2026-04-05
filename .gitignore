@@ -5,3 +5,6 @@ __pycache__/
 venv/
 *.onnx
 *.onnx.json
+known_services.txt
+smith_log.md
+*.log
