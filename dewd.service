@@ -1,0 +1,15 @@
+[Unit]
+Description=DEWD Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=dewd
+WorkingDirectory=/home/dewd/dashboard
+ExecStart=/home/dewd/dashboard/venv/bin/python3 /home/dewd/dashboard/dewd_web.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/dewd/dashboard/.env
+
+[Install]
+WantedBy=multi-user.target

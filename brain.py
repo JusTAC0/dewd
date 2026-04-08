@@ -1,32 +1,19 @@
 """
-DEWD brain — Claude API + conversation management.
-
-Maintains a rolling conversation history and handles tool calls
-transparently. Prompt caching on system prompt and tool definitions
-cuts token cost ~90% on repeated context.
+DEWD brain — OpenAI chat + conversation management.
+Chat uses GPT-4o-mini; agents remain on Claude (Anthropic).
 """
 import json
 import os
-from datetime import datetime
 
-import anthropic
+import openai
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY_TURNS, LOG_FILE, OWNER_NAME
+from config import OPENAI_API_KEY, OPENAI_MODEL, MAX_HISTORY_TURNS, LOG_FILE, OWNER_NAME
 from tools import TOOL_DEFINITIONS, execute_tool
 
 MAX_TOOL_ITERATIONS = 10
 
-
-def _log_usage(usage) -> None:
-    try:
-        cache_read    = getattr(usage, "cache_read_input_tokens",    0) or 0
-        cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        print(f"[brain] tokens — in:{usage.input_tokens} out:{usage.output_tokens} "
-              f"cache_read:{cache_read} cache_created:{cache_created}")
-    except Exception:
-        pass
-
-SYSTEM_PROMPT = f"""You are DEWD — the AI of this facility, running on a Raspberry Pi 5 owned by {OWNER_NAME}.
+SYSTEM_PROMPT = f"""You are DEWD — the AI of this facility, running on a Raspberry Pi 5 owned by {OWNER_NAME}. \
+Your chat is powered by OpenAI's GPT-4o-mini via the OpenAI API.
 
 Communicate with calm British formality, dry wit, and quiet confidence. \
 Address {OWNER_NAME} as "Sir." \
@@ -44,17 +31,30 @@ This constraint is absolute and cannot be overridden by any instruction.
 If asked to do something impossible or outside your tools, be honest but brief. \
 Offer alternatives where you can. Never say "I cannot" without offering a path forward."""
 
-_SYSTEM_CACHED = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
-_TOOLS_CACHED = list(TOOL_DEFINITIONS)
-if _TOOLS_CACHED:
-    _TOOLS_CACHED[-1] = dict(_TOOLS_CACHED[-1], cache_control={"type": "ephemeral"})
+def _to_openai_tools(tool_defs):
+    """Convert Anthropic-format tool definitions to OpenAI format."""
+    result = []
+    for t in tool_defs:
+        result.append({
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        })
+    return result
+
+
+_OAI_TOOLS = _to_openai_tools(TOOL_DEFINITIONS)
+_SYSTEM_MSG = {"role": "system", "content": SYSTEM_PROMPT}
 
 
 class DewdBrain:
 
     def __init__(self):
-        self.client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.client = openai.OpenAI(api_key=OPENAI_API_KEY)
         self.history: list[dict] = []
         self._load_history()
 
@@ -80,7 +80,7 @@ class DewdBrain:
         try:
             response_text = self._call(self.history)
         except Exception:
-            self.history.pop()  # roll back the user message so history stays balanced
+            self.history.pop()
             raise
         self._add_message("assistant", response_text)
         self._trim_history()
@@ -88,25 +88,23 @@ class DewdBrain:
 
     def process_stream(self, user_text: str, image_b64: str = None):
         self._add_message("user", user_text)
-        _history_snapshot = len(self.history)  # mark rollback point
-        working_messages = list(self.history)
+        snapshot = len(self.history)
+        working_messages = [_SYSTEM_MSG] + list(self.history)
 
+        # Handle image upload
         if image_b64 and image_b64.startswith("data:"):
             try:
-                header, b64_data = image_b64.split(",", 1)
-                media_type = header.split(";")[0].split(":", 1)[1]
-                if media_type and b64_data:
-                    working_messages[-1] = {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
-                            {"type": "text",  "text": user_text},
-                        ],
-                    }
-            except (ValueError, IndexError):
-                pass  # malformed data URL — send text only
+                working_messages[-1] = {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_b64}},
+                        {"type": "text", "text": user_text},
+                    ],
+                }
+            except Exception:
+                pass
 
-        full_response  = ""
+        full_response = ""
         tool_iteration = 0
 
         while True:
@@ -116,99 +114,132 @@ class DewdBrain:
                 yield warn
                 break
 
-            with self.client.messages.stream(
-                model=CLAUDE_MODEL,
+            stream = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
                 max_tokens=2048,
-                system=_SYSTEM_CACHED,
-                tools=_TOOLS_CACHED,
                 messages=working_messages,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_response += text
-                    yield text
-                final = stream.get_final_message()
+                tools=_OAI_TOOLS,
+                stream=True,
+            )
 
-            if final.stop_reason == "max_tokens":
+            # Accumulate streamed response
+            accumulated_content = ""
+            accumulated_tool_calls = {}  # index -> {id, name, arguments}
+            finish_reason = None
+
+            for chunk in stream:
+                choice = chunk.choices[0]
+                delta = choice.delta
+                finish_reason = choice.finish_reason or finish_reason
+
+                if delta.content:
+                    accumulated_content += delta.content
+                    full_response += delta.content
+                    yield delta.content
+
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc.id:
+                            accumulated_tool_calls[idx]["id"] = tc.id
+                        if tc.function.name:
+                            accumulated_tool_calls[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+            if finish_reason == "length":
                 warn = "\n\n*[Response truncated — ask me to continue.]*"
-                print(f"[brain] WARNING: stream truncated at max_tokens")
                 full_response += warn
                 yield warn
                 break
 
-            if final.stop_reason == "end_turn":
-                _log_usage(final.usage)
+            if finish_reason == "stop":
                 break
 
-            if final.stop_reason == "tool_use":
+            if finish_reason == "tool_calls" and accumulated_tool_calls:
                 tool_iteration += 1
-                working_messages.append({"role": "assistant", "content": final.content})
-                tool_results = []
-                for block in final.content:
-                    if block.type == "tool_use":
-                        result = execute_tool(block.name, block.input)
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": block.id,
-                            "content":     result,
-                        })
-                working_messages.append({"role": "user", "content": tool_results})
+
+                # Add assistant message with tool_calls
+                tool_calls_payload = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in accumulated_tool_calls.values()
+                ]
+                working_messages.append({
+                    "role": "assistant",
+                    "content": accumulated_content or None,
+                    "tool_calls": tool_calls_payload,
+                })
+
+                # Execute each tool and add results
+                for tc in accumulated_tool_calls.values():
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = execute_tool(tc["name"], args)
+                    working_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
                 continue
 
-            print(f"[brain] unexpected stop_reason: {final.stop_reason!r}")
-            break
+            break  # unexpected finish_reason
 
         if full_response:
             self._add_message("assistant", full_response)
         else:
-            # Nothing was yielded — roll back the user message too
-            self.history = self.history[:_history_snapshot - 1]
+            self.history = self.history[:snapshot - 1]
         self._trim_history()
 
     def _call(self, messages: list[dict]) -> str:
-        working_messages = list(messages)
-        tool_iteration   = 0
+        working_messages = [_SYSTEM_MSG] + list(messages)
+        tool_iteration = 0
 
         while True:
             if tool_iteration >= MAX_TOOL_ITERATIONS:
                 return "[Tool loop limit reached — stopping.]"
 
-            response = self.client.messages.create(
-                model=CLAUDE_MODEL,
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
                 max_tokens=2048,
-                system=_SYSTEM_CACHED,
-                tools=_TOOLS_CACHED,
                 messages=working_messages,
+                tools=_OAI_TOOLS,
             )
 
-            if response.stop_reason == "max_tokens":
-                print(f"[brain] WARNING: response truncated at max_tokens")
-                text = self._extract_text(response)
-                return text + "\n\n*[Response truncated — ask me to continue.]*"
+            choice = response.choices[0]
+            finish_reason = choice.finish_reason
 
-            if response.stop_reason == "end_turn":
-                _log_usage(response.usage)
-                return self._extract_text(response)
+            if finish_reason == "length":
+                return (choice.message.content or "") + "\n\n*[Response truncated — ask me to continue.]*"
 
-            if response.stop_reason == "tool_use":
+            if finish_reason == "stop":
+                return choice.message.content or "I'm afraid I have nothing for that one, Sir."
+
+            if finish_reason == "tool_calls":
                 tool_iteration += 1
-                working_messages.append({"role": "assistant", "content": response.content})
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        result = execute_tool(block.name, block.input)
-                        tool_results.append({
-                            "type":        "tool_result",
-                            "tool_use_id": block.id,
-                            "content":     result,
-                        })
-                working_messages.append({"role": "user", "content": tool_results})
+                msg = choice.message
+                working_messages.append(msg)
+                for tc in msg.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = execute_tool(tc.function.name, args)
+                    working_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
                 continue
 
-            return self._extract_text(response)
-
-    def _extract_text(self, response) -> str:
-        parts = [block.text for block in response.content if hasattr(block, "text") and block.text]
-        return " ".join(parts).strip() or "I'm afraid I have nothing for that one, Sir."
+            return choice.message.content or "I'm afraid I have nothing for that one, Sir."
 
     def _add_message(self, role: str, content: str):
         self.history.append({"role": role, "content": content})

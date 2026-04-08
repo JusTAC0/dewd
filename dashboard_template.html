@@ -650,8 +650,18 @@ nav{flex-shrink:0;height:58px;display:flex;
 
 /* ── CALENDAR / RADAR ── */
 #p-cal{display:none;flex-direction:column;
-  padding:12px 8px 8px;gap:0;overflow:hidden}
+  padding:12px 8px 8px;gap:0;overflow:hidden;position:relative}
 #p-cal.on{display:flex}
+/* floating add button */
+#cal-fab{position:absolute;bottom:18px;right:14px;z-index:200;
+  width:48px;height:48px;border-radius:50%;
+  background:rgba(74,222,128,.12);border:1.5px solid rgba(74,222,128,.55);
+  color:var(--ng);font-size:1.5rem;font-weight:300;line-height:1;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  touch-action:manipulation;box-shadow:0 0 18px rgba(74,222,128,.18);
+  transition:background .15s,border-color .15s,box-shadow .15s}
+#cal-fab:hover{background:rgba(74,222,128,.22);border-color:rgba(74,222,128,.8);
+  box-shadow:0 0 28px rgba(74,222,128,.35)}
 /* cal sub-view toggle */
 .cal-vtabs{display:flex;gap:0;margin-bottom:0;flex-shrink:0;
   border:1px solid rgba(56,189,248,.32);border-bottom:none;
@@ -750,6 +760,23 @@ nav{flex-shrink:0;height:58px;display:flex;
   transition:border-color .15s,background .15s}
 #cal-today-add:hover{border-color:rgba(74,222,128,.65);background:rgba(74,222,128,.07)}
 
+/* strip toggle — mobile only */
+#cal-today-strip{display:none}
+@media(max-width:580px){
+  #cal-today-strip{display:flex;align-items:center;justify-content:space-between;
+    padding:8px 2px;cursor:pointer;flex-shrink:0;
+    border-bottom:1px solid rgba(56,189,248,.2);margin-bottom:8px}
+  #cal-strip-next{font-family:var(--mono);font-size:var(--t-xs);color:var(--nc);
+    letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  #cal-strip-arrow{font-size:.65rem;color:var(--tx);margin-left:8px;flex-shrink:0;
+    transition:transform .2s;display:inline-block}
+  #cal-today.collapsed #cal-strip-arrow{transform:rotate(180deg)}
+  #cal-today.collapsed #cal-today-hdr,
+  #cal-today.collapsed #cal-today-list,
+  #cal-today.collapsed #cal-today-add{display:none}
+  #cal-today.collapsed{min-height:0;padding-top:8px}
+}
+
 /* narrow screens — stack radar + today vertically */
 @media(max-width:580px){
   #cal-radar-view{flex-direction:column;overflow-y:auto}
@@ -758,6 +785,7 @@ nav{flex-shrink:0;height:58px;display:flex;
     border-left:none;border-top:1px solid rgba(56,189,248,.28);
     padding-left:0;padding-top:12px;margin-top:10px;
     min-height:160px;overflow-y:visible}
+  #cal-today.collapsed{min-height:0}
   .cal-mcell{min-height:42px;padding:3px}
   .cal-mev{font-size:.48rem;padding:1px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
   .cal-mday{font-size:.7rem}
@@ -1024,6 +1052,10 @@ nav{flex-shrink:0;height:58px;display:flex;
           <canvas id="cal-canvas"></canvas>
         </div>
         <div id="cal-today">
+          <div id="cal-today-strip" onclick="_toggleTodayPanel()">
+            <span id="cal-strip-next">LOADING…</span>
+            <span id="cal-strip-arrow">▲</span>
+          </div>
           <div id="cal-today-hdr">
             <span id="cal-today-title">// TODAY</span>
             <span id="cal-today-date"></span>
@@ -1050,6 +1082,7 @@ nav{flex-shrink:0;height:58px;display:flex;
         </div>
         <div id="cal-month-grid"></div>
       </div>
+      <button id="cal-fab" onclick="openCalModal(null)" title="New event">+</button>
     </div>
 
   </div>
@@ -1290,7 +1323,16 @@ function switchView(v){
   if(v==='chat')loadConvo();
   /* show cached report when navigating to intel — live stream owns rpt-body if running */
   if(v==='intel'&&!(streamingAgent&&streamingAgent===activeReport))_showReport(activeReport);
-  if(v==='cal'){loadCalendar();if(_calView==='radar')_startRadar();else renderMonthView();}
+  if(v==='cal'){
+    /* start mobile today panel collapsed */
+    if(window.innerWidth<=580){
+      var todayEl=gel('cal-today');
+      _todayCollapsed=true;
+      if(todayEl)todayEl.classList.add('collapsed');
+    }
+    loadCalendar();
+    if(_calView==='radar')_startRadar();else renderMonthView();
+  }
 }
 document.addEventListener('keydown',function(e){
   if(e.target===gel('cinput')||e.target===gel('notes-ta'))return;
@@ -2143,28 +2185,44 @@ gel('mail-overlay').addEventListener('click', function(e) {
 
 /* ── CALENDAR / RADAR ── */
 var calEvents=[], _calEditUid=null, _calRafId=null, _calLoaded=false;
-var _calZoom=5, _calZoomStart=0;
-var _pinchActive=false, _pinchStartDist=0, _pinchStartZoom=5, _pinchMoved=false;
+var _calZoom=1, _calZoomStart=0;
+var _pinchActive=false, _pinchStartDist=0, _pinchStartZoom=1, _pinchMoved=false;
 var _calView='radar';
 var _calMonthY=new Date().getFullYear(), _calMonthM=new Date().getMonth();
+var _isTouchDevice=('ontouchstart' in window)||navigator.maxTouchPoints>0;
+var _calSelectedDay=0; /* day offset currently shown in sidebar; 0=today */
+var _todayCollapsed=true; /* mobile today panel starts collapsed */
 
 function loadCalendar(){
   fetch('/api/calendar')
     .then(function(r){return r.json();})
     .then(function(d){
       calEvents=Array.isArray(d)?d:[];
-      _renderToday();
+      _renderDay(_calSelectedDay);
       if(_calView==='month')renderMonthView();
       else if(_calView==='radar'){_stopRadar();_startRadar();}
     })
     .catch(function(){});
 }
 
+function _renderDay(dayOffset){
+  var titleEl=gel('cal-today-title');
+  var dateEl=gel('cal-today-date');
+  var isToday=dayOffset===0;
+  if(titleEl) titleEl.textContent=isToday?'// TODAY':'// '+new Date(_dateOffset(dayOffset)+'T12:00:00').toLocaleDateString([],{weekday:'short'}).toUpperCase()+' '+new Date(_dateOffset(dayOffset)+'T12:00:00').toLocaleDateString([],{month:'short',day:'numeric'}).toUpperCase();
+  if(dateEl) dateEl.textContent=isToday?new Date().toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}):'';
+  _renderDayList(dayOffset);
+  _updateStrip();
+}
+
 function _renderToday(){
+  _calSelectedDay=0;
   var list=gel('cal-today-list');
   var dateEl=gel('cal-today-date');
+  var titleEl=gel('cal-today-title');
   if(!list)return;
 
+  if(titleEl) titleEl.textContent='// TODAY';
   var today=_dateOffset(0);
   if(dateEl) dateEl.textContent=new Date().toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});
 
@@ -2229,6 +2287,77 @@ function _renderToday(){
       if(ev)openCalModal(ev);
     };
   });
+}
+
+function _renderDayList(dayOffset){
+  var list=gel('cal-today-list');
+  if(!list)return;
+  var dateStr=_dateOffset(dayOffset);
+  var evs=calEvents.filter(function(ev){
+    return ev.start&&ev.start.slice(0,10)===dateStr;
+  }).sort(function(a,b){return a.start<b.start?-1:1;});
+  if(!evs.length){
+    list.innerHTML='<div id="cal-today-empty">NO EVENTS</div>';
+    return;
+  }
+  var now=new Date(),nowMs=now.getTime(),foundNext=false;
+  list.innerHTML=evs.map(function(ev){
+    var sDate=ev.start?new Date(ev.start):null;
+    var eDate=ev.end?new Date(ev.end):null;
+    var sMs=sDate?sDate.getTime():0;
+    var eMs=eDate?eDate.getTime():sMs;
+    var status='upcoming';
+    if(nowMs>=sMs&&nowMs<eMs)status='now';
+    else if(nowMs>=eMs)status='past';
+    var isNext=false;
+    if(status==='upcoming'&&!foundNext){isNext=true;foundNext=true;}
+    var tStr='';
+    if(sDate)tStr=String(sDate.getHours()).padStart(2,'0')+':'+String(sDate.getMinutes()).padStart(2,'0');
+    if(eDate&&sDate&&(eDate.getHours()!==sDate.getHours()||eDate.getMinutes()!==sDate.getMinutes()))
+      tStr+=' → '+String(eDate.getHours()).padStart(2,'0')+':'+String(eDate.getMinutes()).padStart(2,'0');
+    var countdown='';
+    if(isNext&&sMs>nowMs){var diff=Math.round((sMs-nowMs)/60000);countdown=diff<60?'in '+diff+'m':'in '+Math.floor(diff/60)+'h '+(diff%60?diff%60+'m':'');}
+    if(status==='now'){var rem=Math.round((eMs-nowMs)/60000);countdown=rem<60?rem+'m left':Math.floor(rem/60)+'h '+(rem%60?rem%60+'m ':' ')+'left';}
+    var rowCls='cal-ev-row'+(status==='now'?' ev-now':status==='past'?' ev-past':isNext?' ev-next':'');
+    var badge=status==='now'?'<span class="cal-ev-badge ev-badge-now">NOW</span>':isNext?'<span class="cal-ev-badge ev-badge-next">'+(countdown||'NEXT')+'</span>':'';
+    return '<div class="'+rowCls+'" data-uid="'+esc(ev.uid||'')+'">'+
+      '<div class="cal-ev-time">'+esc(tStr)+badge+(countdown&&status==='now'?'<span style="font-size:.6rem;color:var(--mute);margin-left:auto">'+esc(countdown)+'</span>':'')+'</div>'+
+      '<div class="cal-ev-title">'+esc(ev.title||'(no title)')+'</div>'+
+      (ev.description?'<div class="cal-ev-notes">'+esc(ev.description)+'</div>':'')+
+    '</div>';
+  }).join('');
+  list.querySelectorAll('.cal-ev-row').forEach(function(row){
+    var uid=row.dataset.uid;
+    row.onclick=function(){var ev=calEvents.filter(function(e){return e.uid===uid;})[0];if(ev)openCalModal(ev);};
+  });
+}
+
+function _updateStrip(){
+  var strip=gel('cal-strip-next');
+  if(!strip)return;
+  var now=new Date();
+  var upcoming=calEvents.filter(function(ev){
+    return ev.start&&new Date(ev.start)>now;
+  }).sort(function(a,b){return a.start<b.start?-1:1;});
+  if(!upcoming.length){strip.textContent='NO UPCOMING EVENTS';return;}
+  var next=upcoming[0];
+  var diff=Math.round((new Date(next.start)-now)/60000);
+  var countdown=diff<60?'in '+diff+'m':'in '+Math.floor(diff/60)+'h'+(diff%60?' '+diff%60+'m':'');
+  strip.textContent=(next.title||'(no title)').slice(0,22)+' · '+countdown;
+}
+
+function _expandTodayPanel(){
+  var el=gel('cal-today');
+  if(!el)return;
+  _todayCollapsed=false;
+  el.classList.remove('collapsed');
+}
+
+function _toggleTodayPanel(){
+  var el=gel('cal-today');
+  if(!el)return;
+  _todayCollapsed=!_todayCollapsed;
+  el.classList.toggle('collapsed',_todayCollapsed);
 }
 
 function _dateOffset(n){
@@ -2306,14 +2435,17 @@ function _drawRadar(){
     calEvents.forEach(function(ev){var s=_parseISO(ev.start);if(s&&s.date===dayDateStr)evCnt++;});
 
     /* ring arc */
+    var isSelected=actualDay===_calSelectedDay&&!isToday;
     ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);
-    ctx.strokeStyle=isToday?'rgba(74,222,128,.55)':'rgba(56,189,248,'+(0.18-day*0.02)+')';
-    ctx.lineWidth=isToday?2:1;
+    ctx.strokeStyle=isToday?'rgba(74,222,128,.55)':isSelected?'rgba(251,191,36,.7)':'rgba(56,189,248,'+(0.18-day*0.02)+')';
+    ctx.lineWidth=isToday?2:isSelected?2:1;
+    if(isSelected){ctx.shadowColor='rgba(251,191,36,.4)';ctx.shadowBlur=8;}
     ctx.stroke();
+    ctx.shadowBlur=0;
 
     /* ring label — inside top, between this ring and the one inside */
     var lblY=cy-r+step*0.44;
-    var lblSz=Math.max(13,Math.round(sz*(isToday?.034:.028)));
+    var lblSz=Math.max(10,Math.round(sz*(isToday?.024:.019)));
     ctx.font=(isToday?'700 ':'600 ')+lblSz+'px \'Courier New\',monospace';
     ctx.fillStyle=isToday?'rgba(74,222,128,.95)':'rgba(200,220,240,'+(0.75-day*0.07)+')';
     ctx.textAlign='center';ctx.textBaseline='middle';
@@ -2413,16 +2545,6 @@ function _drawRadar(){
   ctx.textAlign='left';ctx.textBaseline='top';
   ctx.fillText(_calZoom+'D VIEW',6,6);
 
-  /* bottom-center: date range */
-  var fd=new Date(_dateOffset(_calZoomStart)+'T12:00:00');
-  var ld=new Date(_dateOffset(_calZoom-1+_calZoomStart)+'T12:00:00');
-  var rangeStr=MONS[fd.getMonth()]+' '+fd.getDate()+' — '+MONS[ld.getMonth()]+' '+ld.getDate();
-  var rSz=Math.max(11,Math.round(sz*.024));
-  ctx.font='600 '+rSz+'px \'Courier New\',monospace';
-  ctx.fillStyle='rgba(56,189,248,.5)';
-  ctx.textAlign='center';ctx.textBaseline='bottom';
-  ctx.fillText(rangeStr,cx,sz-5);
-
   _calRafId=requestAnimationFrame(_drawRadar);
 }
 
@@ -2442,7 +2564,9 @@ function _calClick(e){
   var cm=Math.round((totalMins%60)/15)*15;if(cm===60){ch=(ch+1)%24;cm=0;}
   var dayOff=Math.round(dist/step)-1;
   if(dayOff<0)dayOff=0;if(dayOff>=RINGS)return;
-  var HIT=Math.max(16,sz*.032),hit=null;
+  /* touch devices get a bigger hit zone */
+  var HIT=_isTouchDevice?Math.max(28,sz*.06):Math.max(16,sz*.032);
+  var hit=null;
   calEvents.forEach(function(ev){
     var s=_parseISO(ev.start);if(!s)return;
     var d=-1;
@@ -2454,10 +2578,20 @@ function _calClick(e){
   });
   if(hit){openCalModal(hit);}
   else{
-    var ds=_dateOffset(dayOff+_calZoomStart);
-    var hs=String(ch).padStart(2,'0')+':'+String(cm).padStart(2,'0');
-    var eh=(ch+1)%24;
-    openCalModal(null,ds,hs,String(eh).padStart(2,'0')+':'+String(cm).padStart(2,'0'));
+    var actualDay=dayOff+_calZoomStart;
+    /* first tap on a ring selects it and shows that day in sidebar;
+       tapping the already-selected ring opens the add form */
+    if(_calSelectedDay===actualDay){
+      var ds=_dateOffset(actualDay);
+      var hs=String(ch).padStart(2,'0')+':'+String(cm).padStart(2,'0');
+      var eh=(ch+1)%24;
+      openCalModal(null,ds,hs,String(eh).padStart(2,'0')+':'+String(cm).padStart(2,'0'));
+    } else {
+      _calSelectedDay=actualDay;
+      _renderDay(actualDay);
+      /* on mobile expand the panel so the user sees the day events */
+      if(_isTouchDevice&&_todayCollapsed)_expandTodayPanel();
+    }
   }
 }
 
@@ -2773,20 +2907,20 @@ pushFeed('smith','Smith · standby · triggers after Frontier');
       var dy=e.touches[0].clientY-e.touches[1].clientY;
       var dist=Math.sqrt(dx*dx+dy*dy);
       var ratio=_pinchStartDist/dist;
-      _calZoom=Math.min(7,Math.max(1,Math.round(_pinchStartZoom*ratio)));
+      _calZoom=Math.min(7,Math.max(1,Math.round(_pinchStartZoom/ratio)));
     }
   },{passive:true});
   canvas.addEventListener('touchend',function(){_pinchActive=false;});
   /* scroll-wheel zoom */
   canvas.addEventListener('wheel',function(e){
     e.preventDefault();
-    _calZoom=Math.min(7,Math.max(1,_calZoom+(e.deltaY>0?1:-1)));
+    _calZoom=Math.min(7,Math.max(1,_calZoom+(e.deltaY>0?-1:1)));
   },{passive:false});
 })();
 
 /* refresh today panel every minute so NOW/PAST status stays current */
 setInterval(function(){
-  if(activeView==='cal') _renderToday();
+  if(activeView==='cal'){_renderDay(_calSelectedDay);_updateStrip();}
 },60000);
 /* re-fetch calendar data every 5 min */
 setInterval(function(){

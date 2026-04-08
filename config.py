@@ -17,6 +17,9 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CLAUDE_MODEL      = "claude-haiku-4-5-20251001"
 MAX_HISTORY_TURNS = 10
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL   = "gpt-4o-mini"
+
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS",      "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 GMAIL_MAX_MSGS     = 8
