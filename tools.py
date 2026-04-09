@@ -11,6 +11,9 @@ import requests
 from pathlib import Path
 
 from config import DATA_DIR
+from logger import get_logger
+
+log = get_logger(__name__)
 
 _HOME = str(Path.home())
 
@@ -113,22 +116,8 @@ def execute_tool(name: str, inputs: dict) -> str:
 
 
 def _system_stats() -> str:
-    """Delegate to dewd_web's authoritative stats implementation."""
-    try:
-        from dewd_web import _system_stats as _web_stats
-        s = _web_stats()
-        lines = [
-            f"CPU: {s.get('cpu_pct', '—')}%",
-            f"CPU temp: {s.get('temp', '—')}",
-            f"RAM: {s.get('ram_used_mb', '—')} MB used / {s.get('ram_total_mb', '—')} MB total ({s.get('ram_pct', '—')}%)",
-            f"Disk: {s.get('disk_used_gb', '—')} GB used / {s.get('disk_total_gb', '—')} GB total ({s.get('disk_pct', '—')}%)",
-            f"Uptime: {s.get('uptime', '—')}",
-        ]
-        for iface in s.get("interfaces", []):
-            lines.append(f"Network {iface['name']}: RX {iface['rx_mb']} MB / TX {iface['tx_mb']} MB")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Could not read system stats: {e}"
+    from services.stats import get_stats, format_for_tool
+    return format_for_tool(get_stats())
 
 
 def _run_command(command: str) -> str:

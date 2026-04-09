@@ -8,8 +8,10 @@ import os
 import openai
 
 from config import OPENAI_API_KEY, OPENAI_MODEL, MAX_HISTORY_TURNS, LOG_FILE, OWNER_NAME
+from logger import get_logger
 from tools import TOOL_DEFINITIONS, execute_tool
 
+log = get_logger(__name__)
 MAX_TOOL_ITERATIONS = 10
 
 SYSTEM_PROMPT = f"""You are DEWD — the AI of this facility, running on a Raspberry Pi 5 owned by {OWNER_NAME}. \
@@ -71,9 +73,9 @@ class DewdBrain:
                     self.history.append({"role": "user",      "content": u})
                     self.history.append({"role": "assistant",  "content": n})
             self._trim_history()
-            print(f"[brain] loaded {len(self.history)//2} turns from conversation log")
+            log.info("loaded %d turns from conversation log", len(self.history)//2)
         except Exception as e:
-            print(f"[brain] could not load history: {e}")
+            log.warning("could not load history: %s", e)
 
     def process(self, user_text: str) -> str:
         self._add_message("user", user_text)
@@ -91,16 +93,18 @@ class DewdBrain:
         snapshot = len(self.history)
         working_messages = [_SYSTEM_MSG] + list(self.history)
 
-        # Handle image upload
+        # Handle image upload — auto-convert raw base64 to a proper data URI
+        if image_b64 and not image_b64.startswith("data:"):
+            image_b64 = f"data:image/jpeg;base64,{image_b64}"
+
         if image_b64 and image_b64.startswith("data:"):
             try:
-                working_messages[-1] = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": image_b64}},
-                        {"type": "text", "text": user_text},
-                    ],
-                }
+                msg_copy = dict(working_messages[-1])
+                msg_copy["content"] = [
+                    {"type": "image_url", "image_url": {"url": image_b64}},
+                    {"type": "text", "text": user_text},
+                ]
+                working_messages[-1] = msg_copy
             except Exception:
                 pass
 
@@ -195,7 +199,7 @@ class DewdBrain:
         if full_response:
             self._add_message("assistant", full_response)
         else:
-            self.history = self.history[:snapshot - 1]
+            self.history = self.history[:snapshot]
         self._trim_history()
 
     def _call(self, messages: list[dict]) -> str:

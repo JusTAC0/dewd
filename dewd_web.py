@@ -9,24 +9,21 @@ import hmac
 import json
 import os
 import time
-import subprocess
-import shutil
-import imaplib
 import requests
-import email
-import email.utils
-import re as _re
 import threading
 import queue as _queue
-from email.header import decode_header as _decode_header
-from html.parser import HTMLParser as _HTMLParser
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from functools import wraps
 
 _ET = ZoneInfo("America/New_York")
-from functools import wraps
 from flask import Flask, Response, jsonify, render_template_string, request, session, redirect
 from agents.common import atomic_write as _atomic_write
+from logger import get_logger
+from services.gmail import fetch_inbox as _fetch_gmail, fetch_body as _fetch_gmail_body, delete_message as _delete_gmail
+from services.stats import get_stats as _system_stats
+
+log = get_logger(__name__)
 
 from config import (
     DATA_DIR, STATUS_FILE, LOG_FILE,
@@ -46,7 +43,7 @@ try:
 except Exception as _e:
     _brain    = None
     _brain_ok = False
-    print(f"[web] brain unavailable: {_e}")
+    log.error("brain unavailable: %s", _e)
 
 _brain_lock = threading.Lock()
 
@@ -165,244 +162,6 @@ def _read_json(path, fallback):
         return fallback
 
 
-def _system_stats():
-    stats = {}
-    try:
-        temp = subprocess.check_output(["vcgencmd", "measure_temp"], text=True).strip()
-        stats["temp"] = temp.replace("temp=", "")
-        try:
-            stats["temp_c"] = float(stats["temp"].replace("'C", "").replace("°C", ""))
-        except Exception:
-            stats["temp_c"] = None
-    except Exception:
-        stats["temp"] = "—"
-        stats["temp_c"] = None
-    try:
-        with open("/proc/meminfo") as f:
-            mem = {l.split(":")[0]: int(l.split()[1]) for l in f}
-        total = mem["MemTotal"] // 1024
-        avail = mem["MemAvailable"] // 1024
-        stats["ram_used_mb"]  = total - avail
-        stats["ram_total_mb"] = total
-        stats["ram_pct"]      = round((total - avail) / total * 100, 1)
-    except Exception:
-        stats["ram_used_mb"] = stats["ram_total_mb"] = stats["ram_pct"] = 0
-    try:
-        du = shutil.disk_usage("/")
-        stats["disk_used_gb"]  = round(du.used  / 1e9, 1)
-        stats["disk_total_gb"] = round(du.total / 1e9, 1)
-        stats["disk_pct"]      = round(du.used / du.total * 100, 1)
-    except Exception:
-        stats["disk_used_gb"] = stats["disk_total_gb"] = stats["disk_pct"] = 0
-    try:
-        with open("/proc/stat") as f:
-            c0 = f.readline().split()
-        time.sleep(0.3)
-        with open("/proc/stat") as f:
-            c1 = f.readline().split()
-        idle0, total0 = int(c0[4]), sum(int(x) for x in c0[1:])
-        idle1, total1 = int(c1[4]), sum(int(x) for x in c1[1:])
-        delta = total1 - total0
-        stats["cpu_pct"] = round(100.0 * (1 - (idle1 - idle0) / delta), 1) if delta > 0 else 0
-    except Exception:
-        stats["cpu_pct"] = 0
-    try:
-        with open("/proc/uptime") as f:
-            secs = float(f.read().split()[0])
-        h, m = divmod(int(secs) // 60, 60)
-        stats["uptime"] = f"{h}h {m}m"
-    except Exception:
-        stats["uptime"] = "—"
-    try:
-        with open("/proc/net/dev") as f:
-            lines = f.readlines()[2:]
-        ifaces = []
-        for line in lines:
-            parts = line.split()
-            if len(parts) < 10:
-                continue
-            name = parts[0].rstrip(":")
-            if name == "lo":
-                continue
-            rx_mb = round(int(parts[1]) / 1e6, 1)
-            tx_mb = round(int(parts[9]) / 1e6, 1)
-            ifaces.append({"name": name, "rx_mb": rx_mb, "tx_mb": tx_mb})
-        stats["interfaces"] = ifaces
-    except Exception:
-        stats["interfaces"] = []
-    return stats
-
-
-# ── Gmail ─────────────────────────────────────────────────────────────────────
-
-def _decode_str(raw):
-    parts = _decode_header(raw or "")
-    out = []
-    for b, enc in parts:
-        if isinstance(b, bytes):
-            out.append(b.decode(enc or "utf-8", errors="replace"))
-        else:
-            out.append(b)
-    return "".join(out)
-
-
-def _fetch_gmail():
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        return {"configured": False, "unread": 0, "emails": []}
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=10)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        mail.select("INBOX", readonly=True)
-        _, udata = mail.search(None, "UNSEEN")
-        unread_ids = udata[0].split() if udata[0] else []
-        _, adata = mail.search(None, "ALL")
-        all_ids = adata[0].split() if adata[0] else []
-        fetch_ids = all_ids[-GMAIL_MAX_MSGS:] if len(all_ids) >= GMAIL_MAX_MSGS else all_ids
-        fetch_ids = fetch_ids[::-1]
-        unread_set = set(unread_ids)
-        msgs = []
-        for uid in fetch_ids:
-            _, data = mail.fetch(uid, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
-            if not data or not data[0]:
-                continue
-            raw_header = data[0][1] if isinstance(data[0], tuple) else b""
-            msg = email.message_from_bytes(raw_header)
-            subject  = _decode_str(msg.get("Subject", "(no subject)"))
-            sender   = _decode_str(msg.get("From", ""))
-            date_str = msg.get("Date", "")
-            try:
-                parsed = email.utils.parsedate_to_datetime(date_str)
-                ts_iso = parsed.astimezone(timezone.utc).isoformat()
-            except Exception:
-                ts_iso = ""
-            msgs.append({
-                "uid":     uid.decode(),
-                "subject": subject[:80],
-                "from":    sender[:60],
-                "ts":      ts_iso,
-                "unread":  uid in unread_set,
-            })
-        return {"configured": True, "unread": len(unread_ids), "emails": msgs}
-    except Exception as e:
-        return {"configured": True, "error": str(e), "unread": 0, "emails": []}
-    finally:
-        if mail:
-            try: mail.logout()
-            except Exception: pass
-
-
-def _strip_html(html_str):
-    class _S(_HTMLParser):
-        _SKIP_TAGS = {"style", "script", "head"}
-        _BLOCK_OPEN = {"p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "blockquote", "pre"}
-        _BLOCK_CLOSE = {"p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"}
-        def __init__(self):
-            super().__init__(convert_charrefs=True)
-            self.parts = []
-            self._depth = 0  # nesting depth inside skip tags
-        def handle_data(self, d):
-            if self._depth == 0:
-                self.parts.append(d)
-        def handle_starttag(self, tag, attrs):
-            if tag in self._SKIP_TAGS:
-                self._depth += 1
-                return
-            if self._depth == 0 and tag in self._BLOCK_OPEN:
-                self.parts.append("\n")
-        def handle_endtag(self, tag):
-            if tag in self._SKIP_TAGS:
-                self._depth = max(0, self._depth - 1)
-                return
-            if self._depth == 0 and tag in self._BLOCK_CLOSE:
-                self.parts.append("\n")
-    s = _S()
-    s.feed(html_str)
-    text = "".join(s.parts)
-    text = _re.sub(r"[ \t]+", " ", text)           # collapse inline whitespace
-    text = _re.sub(r" *\n *", "\n", text)           # trim spaces around newlines
-    text = _re.sub(r"\n{3,}", "\n\n", text)         # max two consecutive blank lines
-    return text.strip()
-
-
-def _fetch_gmail_body(uid):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        return {"error": "not configured"}
-    if not (uid.isascii() and uid.isdigit()):
-        return {"error": "invalid uid"}
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        mail.select("INBOX", readonly=True)
-        _, data = mail.fetch(uid.encode(), "(RFC822)")
-        if not data or not data[0]:
-            mail.logout()
-            return {"error": "message not found"}
-        raw = data[0][1]
-        msg = email.message_from_bytes(raw)
-        subject  = _decode_str(msg.get("Subject", ""))
-        sender   = _decode_str(msg.get("From", ""))
-        date_str = msg.get("Date", "")
-        try:
-            parsed = email.utils.parsedate_to_datetime(date_str)
-            ts_iso = parsed.astimezone(timezone.utc).isoformat()
-        except Exception:
-            ts_iso = ""
-        body = ""
-        html_fallback = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                ct  = part.get_content_type()
-                cd  = str(part.get("Content-Disposition", ""))
-                if "attachment" in cd:
-                    continue
-                if ct == "text/plain" and not body:
-                    raw_b = part.get_payload(decode=True) or b""
-                    body = raw_b.decode(part.get_content_charset() or "utf-8", errors="replace")
-                elif ct == "text/html" and not html_fallback:
-                    raw_b = part.get_payload(decode=True) or b""
-                    html_fallback = raw_b.decode(part.get_content_charset() or "utf-8", errors="replace")
-        else:
-            raw_b = msg.get_payload(decode=True) or b""
-            text  = raw_b.decode(msg.get_content_charset() or "utf-8", errors="replace")
-            if msg.get_content_type() == "text/html":
-                html_fallback = text
-            else:
-                body = text
-        if not body and html_fallback:
-            body = _strip_html(html_fallback)
-        return {"subject": subject, "from": sender, "ts": ts_iso, "body": body[:6000]}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if mail:
-            try: mail.logout()
-            except Exception: pass
-
-
-def _delete_gmail(uid):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        return {"error": "not configured"}
-    if not (uid.isascii() and uid.isdigit()):
-        return {"error": "invalid uid"}
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        mail.select("INBOX")
-        mail.copy(uid.encode(), "[Gmail]/Trash")
-        mail.store(uid.encode(), "+FLAGS", "\\Deleted")
-        mail.expunge()
-        return {"ok": True}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if mail:
-            try: mail.logout()
-            except Exception: pass
-
-
 # ── Background scheduler ──────────────────────────────────────────────────────
 
 # Schedules: Daymark 3x daily, Frontier 2x daily.
@@ -458,11 +217,11 @@ def _run_agent(name: str):
             from agents.smith import run
         else:
             return
-        print(f"[scheduler] running {name}…")
+        log.info("running %s…", name)
         run()
-        print(f"[scheduler] {name} complete")
+        log.info("%s complete", name)
     except Exception as e:
-        print(f"[scheduler] {name} error: {e}")
+        log.error("%s error: %s", name, e)
 
 
 def _run_agent_guarded(name: str):
@@ -476,7 +235,7 @@ def _run_agent_guarded(name: str):
                 if not already:
                     _running_agents.add("smith")
             if not already:
-                print("[scheduler] frontier complete — triggering smith")
+                log.info("frontier complete — triggering smith")
                 threading.Thread(
                     target=_run_agent_guarded, args=("smith",), daemon=True
                 ).start()
@@ -498,7 +257,7 @@ def _reset_stale_running():
                 d["status"] = "error"
                 d.setdefault("report", "Agent interrupted — process was killed mid-run.")
                 _atomic_write(path, d)
-                print(f"[startup] cleared stale 'running' for {name}")
+                log.warning("cleared stale 'running' status for %s", name)
         except Exception:
             pass
 
@@ -537,7 +296,7 @@ def _maybe_alert(key: str, title: str, body: str, cooldown_s: int = 3600):
             timeout=8,
         )
     except Exception as e:
-        print(f"[stats] ntfy alert failed: {e}")
+        log.warning("ntfy alert failed: %s", e)
 
 
 def _stats_loop():
@@ -583,7 +342,7 @@ def _stats_loop():
                 )
 
         except Exception as e:
-            print(f"[stats] loop error: {e}")
+            log.error("stats loop error: %s", e)
 
         time.sleep(_STATS_INTERVAL)
 
@@ -921,7 +680,7 @@ def api_agent_run_stream(name):
                     if not already:
                         _running_agents.add("smith")
                 if not already:
-                    print("[stream] frontier complete — triggering smith")
+                    log.info("stream: frontier complete — triggering smith")
                     threading.Thread(
                         target=_run_agent_guarded, args=("smith",), daemon=True
                     ).start()
@@ -980,6 +739,21 @@ def api_notes_post():
 _DASHBOARD_TMPL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard_template.html")
 
 
+@app.route("/api/health")
+def api_health():
+    """Public health check — no auth required. Used by monitoring and uptime checks."""
+    from services.stats import get_stats
+    s = get_stats()
+    return jsonify({
+        "status":    "ok",
+        "brain":     _brain_ok,
+        "cpu_pct":   s.get("cpu_pct"),
+        "ram_pct":   s.get("ram_pct"),
+        "temp_c":    s.get("temp_c"),
+        "uptime":    s.get("uptime"),
+    })
+
+
 @app.route("/favicon.ico")
 def favicon():
     # Inline 1×1 transparent ICO — stops 404 spam in logs
@@ -1013,15 +787,15 @@ if __name__ == "__main__":
             json.dump([], f)
 
     if SECRET_KEY == "change-me-in-env":
-        print("⚠  WARNING: SECRET_KEY is default — set SECRET_KEY in .env")
+        log.warning("SECRET_KEY is default — set SECRET_KEY in .env")
     if not DASHBOARD_PASSWORD:
-        print("⚠  WARNING: DASHBOARD_PASSWORD not set — dashboard will be inaccessible until set")
+        log.warning("DASHBOARD_PASSWORD not set — dashboard will be inaccessible until set")
 
-    print("━" * 54)
-    print("  DEWD Mission Control  →  http://0.0.0.0:8080")
-    print(f"  Brain: {'online' if _brain_ok else 'OFFLINE (check anthropic key)'}")
-    print(f"  Daymark:          7am · 1pm · 7pm ET")
-    print(f"  Frontier:         9am · 9pm ET  →  triggers Smith")
-    print(f"  Smith:            standby — triggers after each Frontier run")
-    print("━" * 54)
+    log.info("━" * 54)
+    log.info("DEWD Mission Control  →  http://0.0.0.0:8080")
+    log.info("Brain: %s", "online" if _brain_ok else "OFFLINE (check API key)")
+    log.info("Daymark:  7am · 1pm · 7pm ET")
+    log.info("Frontier: 9am · 9pm ET  →  triggers Smith")
+    log.info("Smith:    standby — triggers after each Frontier run")
+    log.info("━" * 54)
     app.run(host="0.0.0.0", port=8080, threaded=True)

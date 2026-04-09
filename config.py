@@ -13,7 +13,7 @@ LOG_FILE        = os.path.join(DATA_DIR, "conversation.json")
 STATUS_FILE     = os.path.join(DATA_DIR, "status.json")
 MAX_LOG_ENTRIES = 50
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL      = "claude-haiku-4-5-20251001"
 MAX_HISTORY_TURNS = 10
 

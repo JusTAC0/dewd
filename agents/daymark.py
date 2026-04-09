@@ -1,6 +1,8 @@
 """
 DEWD Daymark Agent
 
+
+log = _get_logger(__name__)
 World awareness agent. Covers news, culture, sports, business, science,
 entertainment and trending topics. No tech agenda, no DEWD agenda.
 Pure world orientation — what is happening on Earth right now.
@@ -22,6 +24,7 @@ from config import (
     DAYMARK_HOURS, MORNING_CHAIN_HOUR,
     WEATHER_LOCATION,
 )
+from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
 
 import anthropic
@@ -126,7 +129,7 @@ def _fetch_rss(name: str, url: str, limit: int = 8) -> list[dict]:
                     break
         return items
     except Exception as e:
-        print(f"  [daymark/rss] {name}: {e}")
+        log.info(f"  [daymark/rss] {name}: {e}")
         return []
 
 
@@ -160,7 +163,7 @@ def _fetch_subreddit(sub: str, limit: int = 25) -> list[dict]:
             })
         return posts
     except Exception as e:
-        print(f"  [daymark/reddit] r/{sub}: {e}")
+        log.info(f"  [daymark/reddit] r/{sub}: {e}")
         return []
 
 
@@ -194,7 +197,7 @@ def _fetch_wikipedia_trending() -> list[dict]:
             if a.get("article") not in ("Main_Page", "Special:Search")
         ]
     except Exception as e:
-        print(f"  [daymark/wikipedia] {e}")
+        log.info(f"  [daymark/wikipedia] {e}")
         return []
 
 
@@ -207,7 +210,7 @@ def _fetch_google_trends() -> list[str]:
         df = pt.trending_searches(pn="united_states")
         return df[0].tolist()[:15]
     except Exception as e:
-        print(f"  [daymark/trends] {e}")
+        log.info(f"  [daymark/trends] {e}")
         return []
 
 
@@ -224,32 +227,32 @@ def _fetch_weather() -> str:
         r.raise_for_status()
         return r.text.strip()
     except Exception as e:
-        print(f"  [daymark/weather] {e}")
+        log.info(f"  [daymark/weather] {e}")
         return "Weather unavailable"
 
 
 # ── Data gathering ────────────────────────────────────────────────────────────
 
 def gather() -> dict:
-    print("  [daymark] gathering news feeds…")
+    log.info("  [daymark] gathering news feeds…")
     news         = _gather_feeds(NEWS_FEEDS)
-    print("  [daymark] gathering entertainment feeds…")
+    log.info("  [daymark] gathering entertainment feeds…")
     entertainment = _gather_feeds(ENTERTAINMENT_FEEDS)
-    print("  [daymark] gathering sports feeds…")
+    log.info("  [daymark] gathering sports feeds…")
     sports       = _gather_feeds(SPORTS_FEEDS)
-    print("  [daymark] gathering business feeds…")
+    log.info("  [daymark] gathering business feeds…")
     business     = _gather_feeds(BUSINESS_FEEDS)
-    print("  [daymark] gathering science feeds…")
+    log.info("  [daymark] gathering science feeds…")
     science      = _gather_feeds(SCIENCE_FEEDS)
-    print("  [daymark] gathering environment feeds…")
+    log.info("  [daymark] gathering environment feeds…")
     environment  = _gather_feeds(ENVIRONMENT_FEEDS)
-    print("  [daymark] fetching Reddit world signals…")
+    log.info("  [daymark] fetching Reddit world signals…")
     reddit       = _gather_reddit()
-    print("  [daymark] fetching Wikipedia trending…")
+    log.info("  [daymark] fetching Wikipedia trending…")
     wiki         = _fetch_wikipedia_trending()
-    print("  [daymark] fetching Google Trends…")
+    log.info("  [daymark] fetching Google Trends…")
     trends       = _fetch_google_trends()
-    print("  [daymark] fetching weather…")
+    log.info("  [daymark] fetching weather…")
     weather      = _fetch_weather()
 
     return {
@@ -430,9 +433,9 @@ def run() -> dict:
     os.makedirs(AGENTS_DIR, exist_ok=True)
     _write_status("running")
     try:
-        print("  [daymark] gathering all world signals…")
+        log.info("  [daymark] gathering all world signals…")
         data   = gather()
-        print("  [daymark] analyzing with Sonnet…")
+        log.info("  [daymark] analyzing with Sonnet…")
         report = analyze(data)
         result = {
             "status":      "ok",

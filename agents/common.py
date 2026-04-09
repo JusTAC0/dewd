@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from logger import get_logger  # noqa: F401 — re-exported for agents
+
 ET = ZoneInfo("America/New_York")
 
 

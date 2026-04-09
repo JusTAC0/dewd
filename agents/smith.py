@@ -1,6 +1,8 @@
 """
 DEWD Smith Agent
 
+
+log = _get_logger(__name__)
 DEWD's autonomous senior engineer. Audits the codebase, finds bugs, patches
 them through a full agentic tool loop, verifies each fix via py_compile and
 cascade import checks, then ships to live.
@@ -28,6 +30,7 @@ from config import (
     SMITH_LOG_PATH, SMITH_BRIEF_WINDOW,
     OWNER_NAME, NTFY_URL, NTFY_TOPIC,
 )
+from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
 
 HAIKU_MODEL  = "claude-haiku-4-5-20251001"
@@ -151,7 +154,7 @@ def phase1_audit(source_files: dict, seen: dict) -> list:
             unchanged_list.append(path)
 
     if not changed_files:
-        print("  [smith/phase1] all files unchanged — skipping audit")
+        log.info("  [smith/phase1] all files unchanged — skipping audit")
         return []
 
     file_sections = [
@@ -205,7 +208,7 @@ Sort by rank_score descending. Only real bugs."""
     try:
         return json.loads(raw).get("findings", [])
     except Exception as e:
-        print(f"  [smith/phase1] JSON parse error: {e} — raw: {raw[:200]}")
+        log.error(f"  [smith/phase1] JSON parse error: {e} — raw: {raw[:200]}")
         return []
 
 
@@ -419,9 +422,9 @@ def _restore_backup(path: str):
                 content = f.read()
             with open(abs_path, "w") as f:
                 f.write(content)
-            print(f"  [smith] restored {path} from .bak")
+            log.info(f"  [smith] restored {path} from .bak")
         except Exception as e:
-            print(f"  [smith] backup restore failed: {e}")
+            log.error(f"  [smith] backup restore failed: {e}")
 
 
 # ── Phase 2: Sonnet engineer agentic loop ─────────────────────────────────────
@@ -512,7 +515,7 @@ def phase2_fix(finding: dict) -> dict:
             if block.type != "tool_use":
                 continue
 
-            print(f"    [smith/tool] {block.name}({list(block.input.keys())})")
+            log.info(f"    [smith/tool] {block.name}({list(block.input.keys())})")
 
             if block.name == "write_file":
                 write_attempts += 1
@@ -544,7 +547,7 @@ def phase2_fix(finding: dict) -> dict:
         for fpath in patched_files:
             ok, err = _run_cascade_check(fpath)
             if not ok:
-                print(f"  [smith] cascade failure: {err}")
+                log.error(f"  [smith] cascade failure: {err}")
                 _restore_backup(fpath)
                 return _make_result("cascade_failed", finding,
                                     f"FAILED: Cascade error after patch — {err}", patched_files)
@@ -594,7 +597,7 @@ def _append_log(result: dict, finding: dict):
         with open(SMITH_LOG_PATH, "a") as f:
             f.write(entry)
     except Exception as e:
-        print(f"  [smith] log append failed: {e}")
+        log.error(f"  [smith] log append failed: {e}")
 
 
 # ── Morning brief ─────────────────────────────────────────────────────────────
@@ -679,7 +682,7 @@ def _send_ntfy(title: str, body: str, priority: str = "default"):
             timeout=10,
         )
     except Exception as e:
-        print(f"  [smith] ntfy failed: {e}")
+        log.error(f"  [smith] ntfy failed: {e}")
 
 
 # ── Entry points ──────────────────────────────────────────────────────────────
@@ -693,13 +696,13 @@ def run() -> dict:
 
     try:
         # Phase 1 — Haiku audit
-        print("  [smith] scanning project files…")
+        log.info("  [smith] scanning project files…")
         source_files = _scan_project_files()
         seen         = _load_seen()
 
-        print(f"  [smith] phase 1 — auditing {len(source_files)} files with Haiku…")
+        log.info(f"  [smith] phase 1 — auditing {len(source_files)} files with Haiku…")
         findings = phase1_audit(source_files, seen)
-        print(f"  [smith] phase 1 complete — {len(findings)} finding(s)")
+        log.info(f"  [smith] phase 1 complete — {len(findings)} finding(s)")
 
         if not findings:
             _update_fingerprints(source_files, seen)
@@ -717,17 +720,17 @@ def run() -> dict:
 
         # Phase 2 — Sonnet engineer, one finding at a time, no cap
         for i, finding in enumerate(findings, 1):
-            print(f"  [smith] phase 2 [{i}/{len(findings)}] — {finding['title']}")
+            log.info(f"  [smith] phase 2 [{i}/{len(findings)}] — {finding['title']}")
             fix_result = phase2_fix(finding)
 
             if fix_result["status"] == "fixed":
                 fixed_results.append(fix_result)
                 _mark_bug_seen(seen, finding, "fixed")
-                print(f"  [smith]   ✓ {finding['title']}")
+                log.info(f"  [smith]   ✓ {finding['title']}")
             else:
                 failed_results.append(fix_result)
                 _mark_bug_seen(seen, finding, fix_result["status"])
-                print(f"  [smith]   ✗ {finding['title']} ({fix_result['status']})")
+                log.error(f"  [smith]   ✗ {finding['title']} ({fix_result['status']})")
 
             _append_log(fix_result, finding)
             time.sleep(1)
@@ -736,14 +739,14 @@ def run() -> dict:
         _update_fingerprints(_scan_project_files(), seen)
 
         # Final import test
-        print("  [smith] running final import test…")
+        log.info("  [smith] running final import test…")
         import_ok, import_err = _final_import_test()
-        print(f"  [smith] import test: {'✓ PASS' if import_ok else '✗ FAIL — ' + import_err}")
+        log.error(f"  [smith] import test: {'✓ PASS' if import_ok else '✗ FAIL — ' + import_err}")
 
         # Morning brief (if within brief window)
         brief = ""
         if _is_morning_run():
-            print("  [smith] building morning brief…")
+            log.info("  [smith] building morning brief…")
             brief = _build_morning_brief(fixed_results, failed_results, import_ok)
             date_str = datetime.now(_ET).strftime("%b %d")
             _send_ntfy(f"DEWD Morning Brief — {date_str}", brief)
@@ -759,7 +762,7 @@ def run() -> dict:
         }
 
     except Exception as e:
-        print(f"  [smith] run failed: {e}")
+        log.error(f"  [smith] run failed: {e}")
         result = {
             "status":      "error",
             "ran_at":      started_at,
@@ -849,9 +852,9 @@ def stream_run():
 
 if __name__ == "__main__":
     r = run()
-    print(f"\nFindings: {r['findings']} | Fixed: {len(r['fixed'])} | "
+    log.error(f"\nFindings: {r['findings']} | Fixed: {len(r['fixed'])} | "
           f"Failed: {len(r['failed'])} | Import: {r['import_test']}")
     for item in r["fixed"]:
-        print(f"  ✓ [{item['rank_score']}] {item['title']}")
+        log.info(f"  ✓ [{item['rank_score']}] {item['title']}")
     for item in r["failed"]:
-        print(f"  ✗ [{item['rank_score']}] {item['title']} ({item['status']})")
+        log.error(f"  ✗ [{item['rank_score']}] {item['title']} ({item['status']})")

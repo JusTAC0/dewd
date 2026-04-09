@@ -1,6 +1,8 @@
 """
 DEWD Frontier Agent
 
+
+log = _get_logger(__name__)
 Tech acquisition scout. Hunts the tech landscape for what DEWD could
 potentially absorb — new libraries, Claude API capabilities, tools,
 techniques, and frameworks gaining traction.
@@ -23,6 +25,7 @@ import requests
 import anthropic
 
 from config import ANTHROPIC_API_KEY, DATA_DIR, FRONTIER_HOURS, AGENTS_DIR
+from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
 
 HAIKU_MODEL  = "claude-haiku-4-5-20251001"
@@ -134,7 +137,7 @@ def _load_manifest() -> dict:
         with open(MANIFEST_FILE) as f:
             return json.load(f)
     except Exception as e:
-        print(f"  [frontier] manifest load failed: {e}")
+        log.error(f"  [frontier] manifest load failed: {e}")
         return {}
 
 
@@ -167,7 +170,7 @@ def _fetch_rss(name: str, url: str, limit: int = 6) -> list[dict]:
                     break
         return items
     except Exception as e:
-        print(f"  [frontier/rss] {name}: {e}")
+        log.info(f"  [frontier/rss] {name}: {e}")
         return []
 
 
@@ -204,7 +207,7 @@ def _gather_github() -> list[dict]:
                 })
             time.sleep(0.5)
         except Exception as e:
-            print(f"  [frontier/gh] {query}: {e}")
+            log.info(f"  [frontier/gh] {query}: {e}")
     # Deduplicate by URL
     seen_urls, deduped = set(), []
     for item in results:
@@ -259,7 +262,7 @@ def _gather_hn() -> list[dict]:
                 })
             time.sleep(0.3)
         except Exception as e:
-            print(f"  [frontier/hn] {query}: {e}")
+            log.info(f"  [frontier/hn] {query}: {e}")
     seen_urls, deduped = set(), []
     for item in results:
         if item["url"] not in seen_urls:
@@ -291,29 +294,29 @@ def _gather_reddit() -> list[dict]:
                 })
             time.sleep(0.4)
         except Exception as e:
-            print(f"  [frontier/reddit] r/{sub}: {e}")
+            log.info(f"  [frontier/reddit] r/{sub}: {e}")
     posts.sort(key=lambda p: p.get("score", 0), reverse=True)
     return posts[:25]
 
 
 def gather() -> dict:
-    print("  [frontier] loading manifest + seen.json…")
+    log.info("  [frontier] loading manifest + seen.json…")
     manifest = _load_manifest()
     seen     = _load_seen()
 
-    print("  [frontier] gathering RSS feeds…")
+    log.info("  [frontier] gathering RSS feeds…")
     rss = _gather_rss()
 
-    print("  [frontier] searching GitHub…")
+    log.info("  [frontier] searching GitHub…")
     github = _gather_github()
 
-    print("  [frontier] checking PyPI versions…")
+    log.info("  [frontier] checking PyPI versions…")
     packages = _gather_pypi()
 
-    print("  [frontier] searching HackerNews…")
+    log.info("  [frontier] searching HackerNews…")
     hn = _gather_hn()
 
-    print("  [frontier] gathering tech Reddit…")
+    log.info("  [frontier] gathering tech Reddit…")
     reddit = _gather_reddit()
 
     return {
@@ -567,9 +570,9 @@ def run() -> dict:
     os.makedirs(AGENTS_DIR, exist_ok=True)
     _write_status("running")
     try:
-        print("  [frontier] gathering all tech signals…")
+        log.info("  [frontier] gathering all tech signals…")
         data   = gather()
-        print("  [frontier] evaluating against manifest with Sonnet…")
+        log.info("  [frontier] evaluating against manifest with Sonnet…")
         result = analyze(data)
         _update_seen(data["seen"], result)
         output = {
@@ -594,4 +597,4 @@ def run() -> dict:
 if __name__ == "__main__":
     r = run()
     for opp in r.get("opportunities", []):
-        print(f"[{opp['score']}] {opp['name']} — {opp['why_dewd']}")
+        log.info(f"[{opp['score']}] {opp['name']} — {opp['why_dewd']}")
