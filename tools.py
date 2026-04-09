@@ -7,9 +7,7 @@ reboot the Raspberry Pi, or remove its own files.
 import os
 import re
 import subprocess
-import shutil
 import requests
-from datetime import datetime
 from pathlib import Path
 
 from config import DATA_DIR
@@ -42,7 +40,7 @@ _BLOCKED_PATHS = [
     "id_rsa", "id_ed25519", "id_ecdsa", "authorized_keys",
 ]
 
-_SECRET_ENV_KEYS = {"ANTHROPIC_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_ADDRESS"}
+_SECRET_ENV_KEYS = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GMAIL_APP_PASSWORD", "GMAIL_ADDRESS"}
 
 
 def _is_safe(command: str) -> tuple[bool, str]:
@@ -99,64 +97,38 @@ TOOL_DEFINITIONS = [
             "required": ["path"],
         },
     },
-    {
-        "name": "run_system_analyzer",
-        "description": "Run a full system health and security analysis of the Raspberry Pi.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "run_trend_setter",
-        "description": "Run the Trend Setter agent: scan Reddit for trending Claude AI projects and emerging AI trends.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
 ]
 
 
 def execute_tool(name: str, inputs: dict) -> str:
     try:
-        if name == "system_stats":       return _system_stats()
-        elif name == "run_command":      return _run_command(inputs.get("command", ""))
-        elif name == "get_weather":      return _get_weather(inputs.get("location", ""))
-        elif name == "list_services":    return _list_services()
-        elif name == "read_file":        return _read_file(inputs.get("path", ""))
-        elif name == "run_system_analyzer": return _run_system_analyzer()
-        elif name == "run_trend_setter":  return _run_trend_setter()
-        else:                            return f"Unknown tool: {name}"
+        if name == "system_stats":    return _system_stats()
+        elif name == "run_command":   return _run_command(inputs.get("command", ""))
+        elif name == "get_weather":   return _get_weather(inputs.get("location", ""))
+        elif name == "list_services": return _list_services()
+        elif name == "read_file":     return _read_file(inputs.get("path", ""))
+        else:                         return f"Unknown tool: {name}"
     except Exception as e:
         return f"Tool error ({name}): {e}"
 
 
 def _system_stats() -> str:
-    lines = []
+    """Delegate to dewd_web's authoritative stats implementation."""
     try:
-        temp = subprocess.check_output(["vcgencmd", "measure_temp"], text=True).strip()
-        lines.append(f"CPU temp: {temp.replace('temp=', '')}")
-    except Exception:
-        pass
-    try:
-        import time
-        with open("/proc/stat") as f: cpu0 = f.readline().split()
-        time.sleep(1)
-        with open("/proc/stat") as f: cpu1 = f.readline().split()
-        idle0, total0 = int(cpu0[4]), sum(int(x) for x in cpu0[1:])
-        idle1, total1 = int(cpu1[4]), sum(int(x) for x in cpu1[1:])
-        lines.append(f"CPU usage: {100.0 * (1 - (idle1-idle0)/(total1-total0)):.1f}%")
-    except Exception:
-        pass
-    try:
-        with open("/proc/meminfo") as f:
-            mem = {l.split(":")[0]: int(l.split()[1]) for l in f}
-        total_mb = mem["MemTotal"] // 1024
-        avail_mb = mem["MemAvailable"] // 1024
-        lines.append(f"RAM: {total_mb - avail_mb} MB used / {total_mb} MB total")
-    except Exception:
-        pass
-    try:
-        stat = shutil.disk_usage("/")
-        lines.append(f"Disk: {stat.used/1e9:.1f} GB used / {stat.total/1e9:.1f} GB total")
-    except Exception:
-        pass
-    return "\n".join(lines) if lines else "Could not read system stats."
+        from dewd_web import _system_stats as _web_stats
+        s = _web_stats()
+        lines = [
+            f"CPU: {s.get('cpu_pct', '—')}%",
+            f"CPU temp: {s.get('temp', '—')}",
+            f"RAM: {s.get('ram_used_mb', '—')} MB used / {s.get('ram_total_mb', '—')} MB total ({s.get('ram_pct', '—')}%)",
+            f"Disk: {s.get('disk_used_gb', '—')} GB used / {s.get('disk_total_gb', '—')} GB total ({s.get('disk_pct', '—')}%)",
+            f"Uptime: {s.get('uptime', '—')}",
+        ]
+        for iface in s.get("interfaces", []):
+            lines.append(f"Network {iface['name']}: RX {iface['rx_mb']} MB / TX {iface['tx_mb']} MB")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Could not read system stats: {e}"
 
 
 def _run_command(command: str) -> str:
@@ -224,17 +196,3 @@ def _read_file(path: str) -> str:
         return f"Could not read file: {e}"
 
 
-def _run_system_analyzer() -> str:
-    try:
-        from agents.system_analyzer import run
-        return run().get("report", "Analysis complete but no report generated.")
-    except Exception as e:
-        return f"System analyzer error: {e}"
-
-
-def _run_trend_setter() -> str:
-    try:
-        from agents.trend_setter import run
-        return run().get("report", "Trend scan complete but no report generated.")
-    except Exception as e:
-        return f"Trend Setter agent error: {e}"
