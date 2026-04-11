@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -257,20 +258,21 @@ def gather() -> dict:
     manifest = _load_manifest()
     seen     = _load_seen()
 
-    log.info("  [frontier] gathering RSS feeds…")
-    rss = _gather_rss()
+    log.info("  [frontier] gathering all signals in parallel…")
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_rss      = ex.submit(_gather_rss)
+        f_github   = ex.submit(_gather_github)
+        f_pypi     = ex.submit(_gather_pypi)
+        f_hn       = ex.submit(_gather_hn)
+        f_reddit   = ex.submit(_gather_reddit)
 
-    log.info("  [frontier] searching GitHub…")
-    github = _gather_github()
+        rss      = f_rss.result()
+        github   = f_github.result()
+        packages = f_pypi.result()
+        hn       = f_hn.result()
+        reddit   = f_reddit.result()
 
-    log.info("  [frontier] checking PyPI versions…")
-    packages = _gather_pypi()
-
-    log.info("  [frontier] searching HackerNews…")
-    hn = _gather_hn()
-
-    log.info("  [frontier] gathering tech Reddit…")
-    reddit = _gather_reddit()
+    log.info(f"  [frontier] gathered {len(rss)} RSS · {len(github)} repos · {len(hn)} HN · {len(reddit)} reddit")
 
     return {
         "manifest": manifest,
@@ -305,6 +307,18 @@ _SYSTEM = [{
         "CVEs against DEWD dependencies: always position 0, skip scoring.\n"
         "Active watchlist items: always include regardless of score.\n"
         "Known gap match: automatic +5 to Functional Specificity.\n\n"
+        "BLUEPRINT GENERATION:\n"
+        "For any opportunity where score >= 11 AND effort is 'low' or 'medium' "
+        "AND category is NOT 'security':\n"
+        "- Set \"implement\": true\n"
+        "- Add \"implementation_spec\": {\n"
+        "    \"blueprint_id\": \"kebab-case-unique-id (max 40 chars)\",\n"
+        "    \"summary\": \"one sentence — what specifically changes in DEWD\",\n"
+        "    \"files_to_touch\": [\"relative/path.py\"],\n"
+        "    \"what_to_build\": \"precise description referencing exact functions/variables\",\n"
+        "    \"constraints\": [\"list of things NOT to change\", \"preserve existing logic\"]\n"
+        "  }\n"
+        "For all other opportunities, omit both fields entirely.\n\n"
         "Output ONLY valid JSON. No prose, no markdown, just the JSON object."
     ),
     "cache_control": {"type": "ephemeral"},
@@ -325,26 +339,26 @@ def _build_prompt(data: dict, seen: dict) -> str:
     ][:15]
 
     return f"""## DEWD MANIFEST (your evaluation criteria)
-{json.dumps(data['manifest'], indent=2)}
+{json.dumps(data['manifest'])}
 
 ## ALREADY SEEN (skip these unless materially changed)
 Packages already reported: {json.dumps(list(data['seen'].get('frontier', {}).get('packages', {}).keys()))}
 Repos already reported: {json.dumps(list(data['seen'].get('frontier', {}).get('repos', {}).keys()))}
 
 ## RSS SIGNALS (new only)
-{json.dumps(rss_filtered, indent=2)}
+{json.dumps(rss_filtered)}
 
 ## GITHUB REPOS (new only)
-{json.dumps(gh_filtered, indent=2)}
+{json.dumps(gh_filtered)}
 
 ## PYPI PACKAGE VERSIONS (DEWD's dependencies)
-{json.dumps(data['packages'], indent=2)}
+{json.dumps(data['packages'])}
 
 ## HACKER NEWS
-{json.dumps(data['hn'], indent=2)}
+{json.dumps(data['hn'])}
 
 ## TECH REDDIT
-{json.dumps(data['reddit'][:20], indent=2)}
+{json.dumps(data['reddit'][:20])}
 
 ---
 
@@ -370,7 +384,15 @@ Return this exact JSON structure:
       "source_url": "https://...",
       "is_security": false,
       "is_watchlist": false,
-      "known_gap_match": "gap name if applicable or null"
+      "known_gap_match": "gap name if applicable or null",
+      "implement": true,
+      "implementation_spec": {
+        "blueprint_id": "kebab-case-id",
+        "summary": "one sentence what changes",
+        "files_to_touch": ["agents/frontier.py"],
+        "what_to_build": "precise description",
+        "constraints": ["do not change X", "preserve Y"]
+      }
     }}
   ],
   "package_updates": [

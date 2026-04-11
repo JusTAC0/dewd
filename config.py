@@ -24,8 +24,9 @@ GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS",      "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 GMAIL_MAX_MSGS     = 8
 
-AGENTS_DIR    = os.path.join(DATA_DIR, "agents")
-CALENDAR_FILE = os.path.join(DATA_DIR, "calendar.json")
+AGENTS_DIR     = os.path.join(DATA_DIR, "agents")
+BLUEPRINTS_DIR = os.path.join(DATA_DIR, "blueprints")
+CALENDAR_FILE  = os.path.join(DATA_DIR, "calendar.json")
 
 NTFY_URL   = os.environ.get("NTFY_URL",   "https://ntfy.sh")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")

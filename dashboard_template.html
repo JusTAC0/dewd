@@ -560,6 +560,29 @@ nav{flex-shrink:0;height:58px;display:flex;
 .mail-btn:hover{background:rgba(255,255,255,.04)}
 .mail-btn:active{opacity:.6}
 
+/* ── BLUEPRINT OVERLAY ── */
+#bp-overlay{display:none;position:fixed;inset:0;z-index:9100;
+  background:rgba(1,4,9,.93);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
+  overflow-y:auto;padding:24px 16px 48px;-webkit-overflow-scrolling:touch;
+  align-items:flex-start;justify-content:center}
+#bp-overlay.on{display:flex}
+.bp-detail{width:100%;max-width:660px;background:var(--card);
+  border:1px solid var(--ng);box-shadow:0 16px 56px rgba(0,0,0,.8),0 0 60px rgba(0,180,80,.06);
+  overflow:hidden}
+.bp-hdr{padding:22px 24px 18px;border-bottom:1px solid rgba(56,189,248,.1)}
+.bp-agent-tag{font-family:var(--mono);font-size:.65rem;font-weight:700;letter-spacing:.18em;
+  color:var(--ng);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.bp-title{font-size:var(--t-lg);font-weight:700;color:var(--txhi);line-height:1.3;word-break:break-word}
+.bp-summary{font-size:var(--t-sm);color:var(--tx);margin-top:8px;line-height:1.65}
+.bp-body{padding:18px 24px}
+.bp-actions{padding:16px 24px;border-top:1px solid rgba(56,189,248,.08);
+  display:flex;gap:10px;background:rgba(0,0,0,.22);flex-wrap:wrap}
+.bp-msg{display:none;margin-top:14px;padding:12px 14px;
+  font-family:var(--mono);font-size:var(--t-sm);letter-spacing:.04em;line-height:1.5;
+  border-left:3px solid;background:rgba(0,0,0,.3)}
+.bp-card-tap{cursor:pointer;transition:border-color .15s,background .15s}
+.bp-card-tap:active{background:rgba(0,180,80,.06);border-color:rgba(0,200,80,.4)}
+
 /* ── MOBILE (<480px) ── */
 /* ── SMALL PHONES (< 480px — cover screens, standard phones) ── */
 @media(max-width:480px){
@@ -976,13 +999,10 @@ nav{flex-shrink:0;height:58px;display:flex;
         <div class="card" style="--acc:var(--no);grid-column:1/-1">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
             <div class="ctitle" style="color:var(--no)">⬡ DAYMARK</div>
-            <span class="card-freq" style="font-family:var(--mono);font-size:var(--t-xs);color:var(--tx);letter-spacing:.08em">3× DAILY</span>
           </div>
           <div class="csub">デイマーク · News · Culture · Sports · Science</div>
           <div class="row"><span class="rk">Status</span><span class="rv" id="dm-status">—</span></div>
           <div class="row"><span class="rk">Last Run</span><span class="rv" id="dm-ran" style="font-size:.8rem">—</span></div>
-          <div class="row"><span class="rk">Next Run</span><span class="rv" id="dm-next" style="font-size:.8rem">—</span></div>
-          <div class="row"><span class="rk">Schedule</span><span class="rv">7am · 1pm · 7pm</span></div>
           <div class="fuel-bar" id="dm-fuel"><div class="fuel-fill" style="background:var(--no)"></div></div>
           <button class="run-btn" style="border-color:var(--no);color:var(--no)"
             onclick="triggerAgent('daymark')">▶ RUN DAYMARK</button>
@@ -995,7 +1015,6 @@ nav{flex-shrink:0;height:58px;display:flex;
               <span style="font-family:var(--mono);font-size:var(--t-xs);color:var(--tx)">→</span>
               <div class="ctitle" style="color:var(--ng);margin:0">⬡ SMITH</div>
             </div>
-            <span class="card-freq" style="font-family:var(--mono);font-size:var(--t-xs);color:var(--tx);letter-spacing:.08em">2× DAILY</span>
           </div>
           <div class="csub" style="margin-bottom:10px">フロンティア → スミス · scout triggers engineer</div>
 
@@ -1005,8 +1024,6 @@ nav{flex-shrink:0;height:58px;display:flex;
               <div style="font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.15em;color:var(--np);margin-bottom:6px">FRONTIER</div>
               <div class="row"><span class="rk">Status</span><span class="rv" id="fr-status">—</span></div>
               <div class="row"><span class="rk">Last Run</span><span class="rv" id="fr-ran" style="font-size:.8rem">—</span></div>
-              <div class="row"><span class="rk">Next Run</span><span class="rv" id="fr-next" style="font-size:.8rem">—</span></div>
-              <div class="row"><span class="rk">Schedule</span><span class="rv">9am · 9pm</span></div>
               <div class="fuel-bar" id="fr-fuel"><div class="fuel-fill" style="background:var(--np)"></div></div>
               <button class="run-btn" style="border-color:var(--np);color:var(--np)"
                 onclick="triggerAgent('frontier')">▶ RUN FRONTIER</button>
@@ -1018,6 +1035,10 @@ nav{flex-shrink:0;height:58px;display:flex;
               <div class="row"><span class="rk">Last Run</span><span class="rv" id="sm-ran" style="font-size:.8rem">—</span></div>
               <div class="row"><span class="rk">Trigger</span><span class="rv" style="font-size:.75rem">VIA FRONTIER</span></div>
               <div class="row"><span class="rk">Fixed</span><span class="rv" id="sm-fixed">—</span></div>
+              <div class="row" onclick="_goSmithBlueprints()" style="cursor:pointer;touch-action:manipulation">
+                <span class="rk">Blueprints</span>
+                <span class="rv" id="sm-blueprints" style="color:var(--mute)">—</span>
+              </div>
               <div class="fuel-bar" id="sm-fuel"><div class="fuel-fill" style="background:var(--ng)"></div></div>
               <button class="run-btn" style="border-color:var(--ng);color:var(--ng)"
                 onclick="triggerAgent('smith')">▶ RUN SMITH</button>
@@ -1139,6 +1160,32 @@ nav{flex-shrink:0;height:58px;display:flex;
         onclick="closeMailOverlay()">← BACK</button>
       <button class="mail-btn" style="border-color:var(--ros);color:var(--ros)"
         id="mail-del-btn" onclick="deleteMail()">✕ DELETE</button>
+    </div>
+  </div>
+</div>
+<!-- BLUEPRINT OVERLAY -->
+<div id="bp-overlay" onclick="if(event.target===this)closeBp()">
+  <div class="bp-detail">
+    <div class="bp-hdr">
+      <div class="bp-agent-tag">⬡ SMITH &nbsp;·&nbsp; BLUEPRINT</div>
+      <div class="bp-title" id="bp-title">—</div>
+      <div class="bp-summary" id="bp-summary-text">—</div>
+    </div>
+    <div class="bp-body">
+      <div class="row"><span class="rk">Score</span><span class="rv" id="bp-score">—</span></div>
+      <div class="row"><span class="rk">Files</span><span class="rv" id="bp-files" style="font-size:.8rem;word-break:break-all">—</span></div>
+      <div class="row"><span class="rk">Opportunity</span><span class="rv" id="bp-opp" style="font-size:.8rem">—</span></div>
+      <div class="row"><span class="rk">Why DEWD</span><span class="rv" id="bp-why" style="font-size:.78rem;color:var(--tx);font-weight:400;max-width:70%;text-align:right;line-height:1.5">—</span></div>
+      <div class="row"><span class="rk">Staged</span><span class="rv" id="bp-date">—</span></div>
+      <div class="row"><span class="rk">Status</span><span class="rv" id="bp-status-lbl">—</span></div>
+      <div class="bp-msg" id="bp-msg"></div>
+    </div>
+    <div class="bp-actions">
+      <button class="run-btn" id="bp-deploy-btn"
+        style="border-color:var(--ng);color:var(--ng);margin:0;flex:1;min-width:200px"
+        onclick="deployBp()">▶ DEPLOY BLUEPRINT</button>
+      <button class="mail-btn" style="border-color:var(--mute);color:var(--mute);white-space:nowrap"
+        onclick="closeBp()">DISMISS</button>
     </div>
   </div>
 </div>
@@ -1340,7 +1387,7 @@ document.addEventListener('keydown',function(e){
   if(e.key==='2')switchView('status');
   if(e.key==='3')switchView('chat');
   if(e.key==='4')switchView('cal');
-  if(e.key==='Escape'){closeNotes();closeCalModal();switchView('intel');}
+  if(e.key==='Escape'){closeNotes();closeCalModal();closeBp();switchView('intel');}
 });
 
 /* NOTES */
@@ -1611,6 +1658,14 @@ function loadAgent(name){
     if(name==='smith'){
       var fixed=(d.fixed||[]).length;
       setText('sm-fixed',fixed?fixed+' fix(es) last run':'—');
+      /* Refresh blueprint count on status card */
+      fetch('/api/blueprints').then(function(r){return r.json()}).then(function(bps){
+        if(!Array.isArray(bps))return;
+        var pending=bps.filter(function(b){return b.status==='pending_review';}).length;
+        setText('sm-blueprints',pending?pending+' pending':'—');
+        var el=gel('sm-blueprints');
+        if(el)el.style.color=pending?'var(--ny)':'var(--mute)';
+      }).catch(function(){});
     }
     var fb=gel(pfx+'-fuel');
     if(fb)fb.className='fuel-bar'+(d.status==='running'?' fuel-run':'');
@@ -1758,11 +1813,13 @@ function _renderReport(name,d){
     if(opps.length){
       body+='<div class="post-grid">'+opps.map(function(opp){
         var isSecure=opp.is_security;
+        var isBp=opp.implement===true;
         var cardClr=isSecure?'var(--ros)':color;
+        var bpBadge=isBp?'<span style="font-family:var(--mono);font-size:.6rem;font-weight:700;letter-spacing:.1em;color:var(--ng);border:1px solid var(--ng);padding:1px 5px;border-radius:2px;margin-left:6px;vertical-align:middle">BLUEPRINT</span>':'';
         return '<a class="post-card" href="'+esc(opp.source_url||'#')+'" target="_blank" rel="noopener">'+
-          '<div class="post-thumb-ph" style="color:'+cardClr+';font-size:1.1rem">'+(isSecure?'⚠':'◈')+'</div>'+
+          '<div class="post-thumb-ph" style="color:'+cardClr+';font-size:1.1rem">'+(isSecure?'⚠':isBp?'◉':'◈')+'</div>'+
           '<div class="post-body">'+
-            '<div class="post-title">'+esc(opp.name)+'</div>'+
+            '<div class="post-title">'+esc(opp.name)+bpBadge+'</div>'+
             '<div class="post-meta"><span style="color:'+cardClr+';font-size:.75rem">['+esc(String(opp.score||0))+'/17] '+esc(opp.category||'')+'</span></div>'+
             '<div class="post-meta"><span style="color:var(--mute);font-size:.75rem">'+esc(opp.why_dewd||'')+'</span></div>'+
           '</div>'+
@@ -1817,6 +1874,10 @@ function _renderReport(name,d){
         '</div>';
       }).join('');
     }
+
+    // Blueprints section — fetched async and injected
+    body+=_section('BLUEPRINTS','var(--ng)');
+    body+='<div id="sm-bp-list"><span style="color:var(--mute);font-size:var(--t-sm)">Loading…</span></div>';
 
   } else if(name==='daymark'){
     if(d.top_stories&&d.top_stories.length){
@@ -1899,6 +1960,7 @@ function _pollUntilDone(name){
 function _showReport(name){
   if(streamingAgent===name)return;  /* live stream owns rpt-body while running */
   gel('rpt-body').innerHTML=reportCache[name]||'';
+  if(name==='smith')_loadBlueprints();
 }
 
 /* Fetch fresh data from the server, update cache, update body if still on this tab.
@@ -1909,8 +1971,151 @@ function loadReport(name){
     var html=_renderReport(name,d);
     if(d.status!=='running')reportCache[name]=html;
     /* Only write to rpt-body if this is still the active tab and nothing is streaming */
-    if(activeReport===name&&streamingAgent!==name)gel('rpt-body').innerHTML=html;
+    if(activeReport===name&&streamingAgent!==name){
+      gel('rpt-body').innerHTML=html;
+      if(name==='smith')_loadBlueprints();
+    }
   }).catch(function(){});
+}
+
+var _bpCache={};
+function _loadBlueprints(){
+  var el=gel('sm-bp-list');
+  if(!el)return;
+  fetch('/api/blueprints').then(function(r){return r.json()}).then(function(bps){
+    if(!Array.isArray(bps)||!bps.length){
+      el.innerHTML='<div class="row"><span class="rv" style="color:var(--mute)">None staged</span></div>';
+      _bpCache={};
+      _updateBpBadge(0);
+      return;
+    }
+    /* cache for overlay lookups */
+    _bpCache={};
+    bps.forEach(function(bp){_bpCache[bp.id]=bp;});
+
+    var statusColor={'pending_review':'var(--ny)','implemented':'var(--ng)','failed':'var(--ros)','rejected':'var(--ros)'};
+    el.innerHTML=bps.map(function(bp){
+      var sc=statusColor[bp.status]||'var(--mute)';
+      var files=bp.files&&bp.files.length?bp.files.join(', '):'—';
+      var ts=bp.status==='implemented'&&bp.implemented_at?'deployed '+fmtLastRun(bp.implemented_at):'staged '+fmtLastRun(bp.generated_at);
+      var isPending=bp.status==='pending_review';
+      return '<div class="bp-card-tap" data-bpid="'+esc(bp.id)+'"'+
+        ' style="padding:10px 12px;border:1px solid rgba(56,189,248,'+(isPending?'.22':'.1')+');'+
+        'border-left:3px solid '+(isPending?'var(--ng)':'var(--mute)')+';margin-bottom:8px;border-radius:2px;'+
+        'background:rgba(10,20,50,'+(isPending?'.6':'.3')+')" onclick="openBp(this.dataset.bpid)">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'+
+          '<span style="font-size:var(--t-sm);font-weight:700;color:var(--txhi);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(bp.name)+'</span>'+
+          '<span style="font-family:var(--mono);font-size:.6rem;font-weight:700;letter-spacing:.1em;color:'+sc+';flex-shrink:0">'+esc((bp.status||'').toUpperCase().replace('_',' '))+'</span>'+
+        '</div>'+
+        '<div style="font-size:.75rem;color:var(--tx);margin-bottom:4px;line-height:1.4">'+esc(bp.summary||'')+'</div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:center">'+
+          '<span style="font-family:var(--mono);font-size:.65rem;color:var(--mute)">'+esc(ts)+'</span>'+
+          (isPending?'<span style="font-family:var(--mono);font-size:.65rem;font-weight:700;color:var(--ng);letter-spacing:.06em">TAP TO DEPLOY →</span>':'')+
+        '</div>'+
+      '</div>';
+    }).join('');
+
+    var pending=bps.filter(function(b){return b.status==='pending_review';}).length;
+    _updateBpBadge(pending);
+  }).catch(function(){
+    var el=gel('sm-bp-list');
+    if(el)el.innerHTML='<div class="row"><span class="rv" style="color:var(--mute)">Unavailable</span></div>';
+  });
+}
+function _goSmithBlueprints(){
+  /* From status card: jump to Intel > Smith > scroll to blueprints */
+  switchView('intel');
+  _activateReport('smith');
+  setTimeout(function(){
+    var el=gel('sm-bp-list');
+    if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
+  },120);
+}
+function _updateBpBadge(pending){
+  setText('sm-blueprints',pending?pending+' pending':'—');
+  var el=gel('sm-blueprints');
+  if(el)el.style.color=pending?'var(--ny)':'var(--mute)';
+}
+
+var _activeBpId=null;
+function openBp(id){
+  var bp=_bpCache[id];
+  if(!bp)return;
+  _activeBpId=id;
+  var isPending=bp.status==='pending_review';
+  var statusColors={'pending_review':'var(--ny)','implemented':'var(--ng)','failed':'var(--ros)','rejected':'var(--ros)'};
+
+  setText('bp-title',bp.name||id);
+  setText('bp-summary-text',bp.summary||'No summary available.');
+  setText('bp-score',(bp.score||'?')+' / 17');
+  setText('bp-files',(bp.files||[]).join('  ·  ')||'—');
+  setText('bp-opp',bp.opportunity_name||'—');
+  setText('bp-why',bp.opportunity_why||'—');
+  setText('bp-date',fmtLastRun(bp.generated_at));
+
+  var stEl=gel('bp-status-lbl');
+  stEl.textContent=(bp.status||'').toUpperCase().replace('_',' ');
+  stEl.style.color=statusColors[bp.status]||'var(--mute)';
+
+  var btn=gel('bp-deploy-btn');
+  if(isPending){
+    btn.style.display='';
+    btn.textContent='▶ DEPLOY BLUEPRINT';
+    btn.disabled=false;
+    btn.style.opacity='1';
+  } else {
+    btn.style.display='none';
+  }
+
+  var msg=gel('bp-msg');
+  msg.style.display='none';
+  msg.textContent='';
+
+  gel('bp-overlay').classList.add('on');
+}
+function closeBp(){
+  gel('bp-overlay').classList.remove('on');
+  _activeBpId=null;
+}
+function deployBp(){
+  if(!_activeBpId)return;
+  var btn=gel('bp-deploy-btn');
+  btn.textContent='DEPLOYING…';
+  btn.disabled=true;
+  btn.style.opacity='0.45';
+
+  fetch('/api/blueprints/'+encodeURIComponent(_activeBpId)+'/apply',{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var msg=gel('bp-msg');
+      msg.style.display='block';
+      if(d.ok){
+        msg.style.borderColor='var(--ng)';
+        msg.style.color='var(--ng)';
+        msg.textContent='DEPLOYED — DEWD is restarting. Refresh the dashboard in a moment.';
+        btn.style.display='none';
+        if(_bpCache[_activeBpId])_bpCache[_activeBpId].status='implemented';
+        setTimeout(_loadBlueprints,1500);
+      } else {
+        msg.style.borderColor='var(--ros)';
+        msg.style.color='var(--ros)';
+        msg.textContent=d.message||'Deploy failed — check smith_log.md.';
+        btn.textContent='▶ DEPLOY BLUEPRINT';
+        btn.disabled=false;
+        btn.style.opacity='1';
+      }
+    })
+    .catch(function(){
+      var msg=gel('bp-msg');
+      msg.style.display='block';
+      msg.style.borderColor='var(--ros)';
+      msg.style.color='var(--ros)';
+      msg.textContent='Connection error — try again.';
+      var btn=gel('bp-deploy-btn');
+      btn.textContent='▶ DEPLOY BLUEPRINT';
+      btn.disabled=false;
+      btn.style.opacity='1';
+    });
 }
 
 /* THEMES */

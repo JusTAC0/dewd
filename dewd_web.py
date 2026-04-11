@@ -29,7 +29,7 @@ from config import (
     GMAIL_ADDRESS, GMAIL_APP_PASSWORD, GMAIL_MAX_MSGS,
     MAX_LOG_ENTRIES,
     DAYMARK_HOURS, FRONTIER_HOURS,
-    AGENTS_DIR, CALENDAR_FILE,
+    AGENTS_DIR, BLUEPRINTS_DIR, CALENDAR_FILE,
     WEATHER_LOCATION,
     SECRET_KEY, DASHBOARD_PASSWORD,
     NTFY_URL, NTFY_TOPIC,
@@ -589,6 +589,48 @@ def api_weather():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/blueprints")
+@login_required
+def api_blueprints():
+    """Return a summary list of all blueprints (no file content)."""
+    try:
+        os.makedirs(BLUEPRINTS_DIR, exist_ok=True)
+        blueprints = []
+        for fn in sorted(os.listdir(BLUEPRINTS_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(BLUEPRINTS_DIR, fn)) as f:
+                    bp = json.load(f)
+                blueprints.append({
+                    "id":               bp.get("id", fn[:-5]),
+                    "name":             bp.get("name", ""),
+                    "summary":          bp.get("summary", ""),
+                    "score":            bp.get("score", 0),
+                    "status":           bp.get("status", "unknown"),
+                    "generated_at":     bp.get("generated_at", ""),
+                    "implemented_at":   bp.get("implemented_at", ""),
+                    "files":            [f["path"] for f in bp.get("files", [])],
+                    "opportunity_name": bp.get("opportunity_name", ""),
+                    "opportunity_why":  bp.get("opportunity_why", ""),
+                })
+            except Exception:
+                pass
+        return jsonify(blueprints)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/blueprints/<blueprint_id>/apply", methods=["POST"])
+@login_required
+def api_apply_blueprint(blueprint_id):
+    """Deploy a staged blueprint to live code."""
+    from tools import execute_tool
+    result = execute_tool("apply_blueprint", {"blueprint_id": blueprint_id})
+    ok = "deployed successfully" in result.lower()
+    return jsonify({"ok": ok, "message": result})
 
 
 @app.route("/api/agents/stats/history")

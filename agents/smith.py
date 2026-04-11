@@ -17,14 +17,16 @@ Writes run state to data/agents/smith.json
 import hashlib
 import json
 import os
+import re
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 
 import anthropic
 
 from config import (
-    ANTHROPIC_API_KEY, DATA_DIR, AGENTS_DIR,
+    ANTHROPIC_API_KEY, DATA_DIR, AGENTS_DIR, BLUEPRINTS_DIR,
     SMITH_LOG_PATH, SMITH_BRIEF_WINDOW,
     OWNER_NAME,
 )
@@ -378,6 +380,12 @@ def _run_cascade_check(patched_path: str) -> tuple:
         return False, f"{patched_path}: {result.stderr.strip()}"
 
     module_short = os.path.basename(os.path.splitext(patched_path)[0])
+    import_patterns = (
+        f"import {module_short}",
+        f"from {module_short} import",
+        f"from agents.{module_short} import",
+        f"import agents.{module_short}",
+    )
     for root, dirs, filenames in os.walk(PROJECT_DIR):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
         for fn in filenames:
@@ -389,7 +397,7 @@ def _run_cascade_check(patched_path: str) -> tuple:
             try:
                 with open(fpath) as f:
                     content = f.read()
-                if module_short in content:
+                if any(pat in content for pat in import_patterns):
                     dep = subprocess.run(
                         [PYTHON_BIN, "-m", "py_compile", fpath],
                         capture_output=True, text=True, timeout=15, cwd=PROJECT_DIR,
@@ -543,6 +551,267 @@ def phase2_fix(finding: dict) -> dict:
     return _make_result(status, finding, final_text or "No final message from engineer.", patched_files)
 
 
+# ── Phase 3: Blueprint Builder ─────────────────────────────────────────────────
+
+_DANGEROUS_CODE_PATTERNS = [
+    (r"eval\s*\(",                          "eval() — code injection risk"),
+    (r"exec\s*\(",                          "exec() — code injection risk"),
+    (r"__import__\s*\(",                    "__import__() — dynamic import risk"),
+    (r"os\.system\s*\(",                    "os.system() — shell injection risk"),
+    (r"subprocess\b[^\n]*shell\s*=\s*True", "subprocess with shell=True — injection risk"),
+    (r"(?<!\w)open\s*\([^)]*\.\.[/\\]",    "path traversal in open()"),
+]
+
+
+def _safety_scan(content: str) -> tuple:
+    for pattern, reason in _DANGEROUS_CODE_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            return False, reason
+    return True, ""
+
+
+def _get_existing_blueprint_ids() -> set:
+    try:
+        os.makedirs(BLUEPRINTS_DIR, exist_ok=True)
+        return {
+            f[:-5] for f in os.listdir(BLUEPRINTS_DIR)
+            if f.endswith(".json")
+        }
+    except Exception:
+        return set()
+
+
+SMITH_PHASE3_TOOLS = [
+    {
+        "name": "read_file",
+        "description": "Read a DEWD project file. Path relative to project root or absolute.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path (e.g. 'agents/frontier.py')"}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "stage_file",
+        "description": (
+            "Stage your implementation for human review — does NOT go live until approved. "
+            "Always write the complete file — never partial content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":    {"type": "string", "description": "File path relative to project root"},
+                "content": {"type": "string", "description": "Complete new file content"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "run_py_compile",
+        "description": "Syntax-check a Python file. Checks staged version if available.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to project root or absolute"}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "list_project_files",
+        "description": "List all .py source files in the DEWD project.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "grep_codebase",
+        "description": "Search for a string or pattern across all DEWD .py files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Search string or regex pattern"}
+            },
+            "required": ["pattern"],
+        },
+    },
+]
+
+
+_PHASE3_SYSTEM = [{
+    "type": "text",
+    "text": (
+        "You are Smith Phase 3 — DEWD's autonomous builder. "
+        "You have been given a feature specification. Implement it precisely in DEWD.\n\n"
+        "Your output goes into a staging blueprint for human review — nothing goes live until approved.\n\n"
+        "Process:\n"
+        "1. read_file — understand the files you need to modify\n"
+        "2. stage_file — write your complete implementation (staged, not live)\n"
+        "3. run_py_compile — verify the staged file compiles cleanly\n"
+        "4. Output your final message starting with exactly 'BUILT:' or 'FAILED:'\n\n"
+        "Rules:\n"
+        "- Implement ONLY what the spec describes. No extras, no refactoring.\n"
+        "- Write minimal, clean code that matches DEWD's existing style exactly.\n"
+        "- NEVER use eval(), exec(), os.system(), or subprocess with shell=True.\n"
+        "- NEVER add outbound network calls to new domains.\n"
+        "- Preserve all existing comments, docstrings, and formatting.\n"
+        "- If you cannot implement safely and cleanly, output FAILED: with a clear explanation.\n\n"
+        "Your final message MUST start with 'BUILT:' or 'FAILED:' — no exceptions."
+    ),
+    "cache_control": {"type": "ephemeral"},
+}]
+
+
+def phase3_build(opportunity: dict) -> dict | None:
+    """
+    Build a blueprint for one Frontier opportunity.
+    Stages implementation for human review — does not deploy.
+    Returns blueprint dict on success, None on failure.
+    """
+    spec         = opportunity.get("implementation_spec", {})
+    blueprint_id = spec.get("blueprint_id", "").strip()
+    if not blueprint_id:
+        return None
+
+    log.info(f"  [smith/phase3] building blueprint: {blueprint_id}")
+
+    staged_files = {}   # rel_path -> content
+    temp_dir     = tempfile.mkdtemp(prefix="dewd_bp_")
+
+    def _exec_phase3(tool_name: str, tool_input: dict) -> str:
+        if tool_name == "stage_file":
+            path    = tool_input.get("path", "")
+            content = tool_input.get("content", "")
+            if not path or not content:
+                return "ERROR: path and content are required"
+            staged_files[path] = content
+            temp_path = os.path.join(temp_dir, os.path.basename(path))
+            try:
+                with open(temp_path, "w") as f:
+                    f.write(content)
+                return f"OK: staged {path} ({len(content)} bytes)"
+            except Exception as e:
+                return f"ERROR: {e}"
+
+        elif tool_name == "run_py_compile":
+            path     = tool_input.get("path", "")
+            rel      = os.path.relpath(_resolve_path(path), PROJECT_DIR)
+            temp_path = os.path.join(temp_dir, os.path.basename(path))
+            compile_target = temp_path if (rel in staged_files and os.path.exists(temp_path)) else _resolve_path(path)
+            try:
+                result = subprocess.run(
+                    [PYTHON_BIN, "-m", "py_compile", compile_target],
+                    capture_output=True, text=True, timeout=15, cwd=PROJECT_DIR,
+                )
+                return "OK" if result.returncode == 0 else (result.stderr.strip() or "Compile error")
+            except Exception as e:
+                return f"ERROR: {e}"
+
+        else:
+            return _execute_tool(tool_name, tool_input)
+
+    client   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    user_msg = (
+        f"Implement this feature for DEWD:\n\n"
+        f"**Opportunity**: {opportunity.get('name', '')}\n"
+        f"**Summary**: {spec.get('summary', '')}\n"
+        f"**Files to touch**: {', '.join(spec.get('files_to_touch', []))}\n"
+        f"**What to build**: {spec.get('what_to_build', '')}\n"
+        f"**Constraints**: {json.dumps(spec.get('constraints', []))}\n\n"
+        f"Read the relevant files, stage your implementation, compile-verify, then respond BUILT: or FAILED:."
+    )
+
+    messages        = [{"role": "user", "content": user_msg}]
+    final_text      = ""
+    write_attempts  = 0
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        response = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=4000,
+            system=_PHASE3_SYSTEM,
+            tools=SMITH_PHASE3_TOOLS,
+            messages=messages,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            for block in response.content:
+                if hasattr(block, "text"):
+                    final_text = block.text
+            break
+
+        if response.stop_reason != "tool_use":
+            break
+
+        tool_results = []
+        abort = False
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            log.info(f"    [smith/phase3/tool] {block.name}({list(block.input.keys())})")
+            if block.name == "stage_file":
+                write_attempts += 1
+                if write_attempts > MAX_ATTEMPTS_PER_FINDING:
+                    tool_results.append({
+                        "type": "tool_result", "tool_use_id": block.id,
+                        "content": f"ERROR: Max stage attempts reached.",
+                    })
+                    final_text = "FAILED: Exceeded max stage attempts."
+                    abort = True
+                    break
+            result_text = _exec_phase3(block.name, block.input)
+            tool_results.append({
+                "type": "tool_result", "tool_use_id": block.id, "content": result_text,
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+        if abort:
+            break
+
+    import shutil
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if not final_text.startswith("BUILT:"):
+        log.error(f"  [smith/phase3] blueprint {blueprint_id} failed: {final_text[:120]}")
+        return None
+
+    if not staged_files:
+        log.error(f"  [smith/phase3] BUILT: but no files were staged for {blueprint_id}")
+        return None
+
+    # Safety scan every staged file
+    for path, content in staged_files.items():
+        ok, reason = _safety_scan(content)
+        if not ok:
+            log.error(f"  [smith/phase3] safety scan FAILED for {path}: {reason}")
+            return None
+
+    # Save blueprint
+    os.makedirs(BLUEPRINTS_DIR, exist_ok=True)
+    blueprint = {
+        "id":               blueprint_id,
+        "name":             opportunity.get("name", blueprint_id),
+        "opportunity_name": opportunity.get("name", ""),
+        "opportunity_why":  opportunity.get("why_dewd", ""),
+        "score":            opportunity.get("score", 0),
+        "summary":          spec.get("summary", ""),
+        "files": [
+            {"path": path, "content": content}
+            for path, content in staged_files.items()
+        ],
+        "safety_passed":  True,
+        "generated_at":   datetime.now(timezone.utc).isoformat(),
+        "status":         "pending_review",
+    }
+    bp_path = os.path.join(BLUEPRINTS_DIR, f"{blueprint_id}.json")
+    from agents.common import atomic_write as _aw
+    _aw(bp_path, blueprint)
+
+    log.info(f"  [smith/phase3] blueprint saved: {blueprint_id} ({len(staged_files)} file(s))")
+    return blueprint
+
+
 def _final_import_test() -> tuple:
     """Verify dewd_web still imports cleanly after all patches."""
     try:
@@ -646,12 +915,44 @@ def _build_morning_brief(fixed: list, failed: list, import_ok: bool) -> str:
     return "".join(lines)
 
 
+def _run_phase3() -> list:
+    """
+    Check frontier.json for implementable opportunities and build blueprints.
+    Returns list of blueprint ids that were created this run.
+    """
+    frontier_file = os.path.join(AGENTS_DIR, "frontier.json")
+    created = []
+    try:
+        if not os.path.exists(frontier_file):
+            return created
+        with open(frontier_file) as f:
+            frontier_data = json.load(f)
+        existing_ids = _get_existing_blueprint_ids()
+        for opp in frontier_data.get("opportunities", []):
+            if not opp.get("implement"):
+                continue
+            spec = opp.get("implementation_spec", {})
+            bid  = spec.get("blueprint_id", "").strip()
+            if not bid or bid in existing_ids:
+                continue
+            log.info(f"  [smith/phase3] new blueprint candidate: {bid}")
+            bp = phase3_build(opp)
+            if bp:
+                created.append(bp)
+                existing_ids.add(bid)
+    except Exception as e:
+        log.error(f"  [smith/phase3] phase3 check failed: {e}")
+    return created
+
+
 def run() -> dict:
     os.makedirs(AGENTS_DIR, exist_ok=True)
     write_status(OUTPUT_FILE, "running")
     started_at     = datetime.now(timezone.utc).isoformat()
     fixed_results  = []
     failed_results = []
+    import_ok      = True
+    import_err     = "skipped — no changes"
 
     try:
         log.info("  [smith] scanning project files…")
@@ -662,41 +963,42 @@ def run() -> dict:
         findings = phase1_audit(source_files, seen)
         log.info(f"  [smith] phase 1 complete — {len(findings)} finding(s)")
 
-        if not findings:
+        if findings:
+            for i, finding in enumerate(findings, 1):
+                log.info(f"  [smith] phase 2 [{i}/{len(findings)}] — {finding['title']}")
+                fix_result = phase2_fix(finding)
+
+                if fix_result["status"] == "fixed":
+                    fixed_results.append(fix_result)
+                    _mark_bug_seen(seen, finding, "fixed")
+                    log.info(f"  [smith]   ✓ {finding['title']}")
+                else:
+                    failed_results.append(fix_result)
+                    _mark_bug_seen(seen, finding, fix_result["status"])
+                    log.error(f"  [smith]   ✗ {finding['title']} ({fix_result['status']})")
+
+                _append_log(fix_result, finding)
+                time.sleep(1)
+
+            _update_fingerprints(_scan_project_files(), seen)
+            log.info("  [smith] running final import test…")
+            import_ok, import_err = _final_import_test()
+            log.info(f"  [smith] import test: {'✓ PASS' if import_ok else '✗ FAIL — ' + import_err}")
+        else:
             _update_fingerprints(source_files, seen)
-            result = {
-                "status":      "ok",
-                "ran_at":      started_at,
-                "findings":    0,
-                "fixed":       [],
-                "failed":      [],
-                "import_test": "skipped — no changes",
-                "brief":       "",
-            }
-            atomic_write(OUTPUT_FILE, result)
-            return result
 
-        for i, finding in enumerate(findings, 1):
-            log.info(f"  [smith] phase 2 [{i}/{len(findings)}] — {finding['title']}")
-            fix_result = phase2_fix(finding)
-
-            if fix_result["status"] == "fixed":
-                fixed_results.append(fix_result)
-                _mark_bug_seen(seen, finding, "fixed")
-                log.info(f"  [smith]   ✓ {finding['title']}")
-            else:
-                failed_results.append(fix_result)
-                _mark_bug_seen(seen, finding, fix_result["status"])
-                log.error(f"  [smith]   ✗ {finding['title']} ({fix_result['status']})")
-
-            _append_log(fix_result, finding)
-            time.sleep(1)
-
-        _update_fingerprints(_scan_project_files(), seen)
-
-        log.info("  [smith] running final import test…")
-        import_ok, import_err = _final_import_test()
-        log.error(f"  [smith] import test: {'✓ PASS' if import_ok else '✗ FAIL — ' + import_err}")
+        # Phase 3 — blueprint builder (runs regardless of Phase 1/2 outcome)
+        log.info("  [smith] phase 3 — checking Frontier for blueprint candidates…")
+        new_blueprints = _run_phase3()
+        for bp in new_blueprints:
+            send_alert(
+                f"Blueprint Staged — {bp['name']}",
+                f"Smith has staged a blueprint for your review, Sir.\n\n"
+                f"Opportunity: {bp['opportunity_name']}\n"
+                f"Summary: {bp['summary']}\n"
+                f"Files: {', '.join(f['path'] for f in bp['files'])}\n\n"
+                f"To deploy, tell me: implement blueprint {bp['id']}",
+            )
 
         brief = ""
         if _is_morning_run():
