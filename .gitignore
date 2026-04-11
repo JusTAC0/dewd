@@ -2,6 +2,7 @@
 data/
 __pycache__/
 *.pyc
+*.bak
 venv/
 *.onnx
 *.onnx.json

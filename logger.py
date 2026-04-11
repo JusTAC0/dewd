@@ -10,8 +10,8 @@ import os
 from config import DATA_DIR
 
 _LOG_FILE    = os.path.join(DATA_DIR, "dewd.log")
-_MAX_BYTES   = 2 * 1024 * 1024   # 2 MB per file
-_BACKUP_COUNT = 3                 # keep 3 rotated files
+_MAX_BYTES   = 2 * 1024 * 1024
+_BACKUP_COUNT = 3
 
 _FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
@@ -21,16 +21,14 @@ def _configure():
 
     root = logging.getLogger()
     if root.handlers:
-        return  # already configured
+        return
 
     root.setLevel(logging.INFO)
 
-    # stderr — picked up by systemd journal
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(logging.Formatter(_FMT, _DATE_FMT))
     root.addHandler(stream_handler)
 
-    # rotating file — survives reboots, readable without journalctl
     try:
         file_handler = logging.handlers.RotatingFileHandler(
             _LOG_FILE, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8"
@@ -38,9 +36,8 @@ def _configure():
         file_handler.setFormatter(logging.Formatter(_FMT, _DATE_FMT))
         root.addHandler(file_handler)
     except Exception as e:
-        root.warning(f"Could not open log file {_LOG_FILE}: {e}")
+        root.warning("Could not open log file %s: %s", _LOG_FILE, e)
 
-    # Silence noisy third-party loggers
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

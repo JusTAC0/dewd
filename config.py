@@ -39,15 +39,10 @@ SYS_HISTORY_MAX = 48
 
 SMITH_LOG_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "smith_log.md")
 
-# Daymark — world awareness, 3x daily
-DAYMARK_HOURS = (7, 13, 19)   # 7am, 1pm, 7pm ET
+DAYMARK_HOURS = (7, 13, 19)
 
-# Morning chain hour — Daymark run that kicks off Frontier → Smith → brief
 MORNING_CHAIN_HOUR = 7
 
-# Frontier — tech scouting, 2x daily
-FRONTIER_HOURS = (9, 21)       # 9am, 9pm ET
+FRONTIER_HOURS = (9, 21)
 
-# Smith — triggered by Frontier, no fixed schedule
-# Morning brief window: if Smith runs between these hours ET it fires the brief
-SMITH_BRIEF_WINDOW = (8, 12)   # 8am–12pm ET
+SMITH_BRIEF_WINDOW = (8, 12)

@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import time
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -24,7 +23,7 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY, DATA_DIR, FRONTIER_HOURS, AGENTS_DIR
 from agents.common import get_logger as _get_logger
-from agents.common import atomic_write, write_status, write_error, ET as _ET
+from agents.common import fetch_rss, atomic_write, write_status, write_error, ET_TZ as _ET
 from notify import send_alert
 
 log = _get_logger(__name__)
@@ -131,41 +130,10 @@ def _load_manifest() -> dict:
         return {}
 
 
-def _fetch_rss(name: str, url: str, limit: int = 6) -> list[dict]:
-    try:
-        r = requests.get(url, timeout=12, headers=HEADERS)
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
-        ns   = {"atom": "http://www.w3.org/2005/Atom"}
-        items = []
-        for item in root.iter("item"):
-            title = (item.findtext("title") or "").strip()
-            link  = (item.findtext("link")  or "").strip()
-            desc  = (item.findtext("description") or "").strip()[:300]
-            if title and link:
-                items.append({"title": title[:160], "url": link, "summary": desc, "source": name})
-            if len(items) >= limit:
-                break
-        if not items:
-            for entry in root.findall(".//atom:entry", ns):
-                title   = (entry.findtext("atom:title", namespaces=ns) or "").strip()
-                link_el = entry.find("atom:link", ns)
-                link    = (link_el.get("href") if link_el is not None else "") or ""
-                summary = (entry.findtext("atom:summary", namespaces=ns) or "").strip()[:300]
-                if title and link:
-                    items.append({"title": title[:160], "url": link, "summary": summary, "source": name})
-                if len(items) >= limit:
-                    break
-        return items
-    except Exception as e:
-        log.info(f"  [frontier/rss] {name}: {e}")
-        return []
-
-
 def _gather_rss() -> list[dict]:
     items = []
     for name, url, limit in TECH_FEEDS:
-        items.extend(_fetch_rss(name, url, limit))
+        items.extend(fetch_rss(name, url, limit, headers=HEADERS))
         time.sleep(0.3)
     return items
 

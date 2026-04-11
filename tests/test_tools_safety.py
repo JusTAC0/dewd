@@ -15,7 +15,6 @@ from tools import _is_safe, _read_file
 
 class TestIsSafe(unittest.TestCase):
 
-    # ── Commands that must be BLOCKED ──────────────────────────────────────────
 
     def test_blocks_shutdown(self):
         safe, _ = _is_safe("shutdown now")
@@ -101,7 +100,6 @@ class TestIsSafe(unittest.TestCase):
         safe, _ = _is_safe("mkfs.ext4 /dev/sda")
         self.assertFalse(safe)
 
-    # ── Commands that must be ALLOWED ──────────────────────────────────────────
 
     def test_allows_ls(self):
         safe, _ = _is_safe("ls -la /home")
@@ -143,7 +141,6 @@ class TestIsSafe(unittest.TestCase):
 class TestReadFile(unittest.TestCase):
 
     def setUp(self):
-        # Create a temp file we're allowed to read
         self.tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", dir=os.path.expanduser("~"), delete=False
         )
@@ -166,7 +163,6 @@ class TestReadFile(unittest.TestCase):
         self.assertIn("Access denied", result)
 
     def test_blocks_env_file(self):
-        # .env is a blocked path regardless of location
         env_path = os.path.join(os.path.expanduser("~"), ".env")
         result = _read_file(env_path)
         self.assertIn("Access denied", result)

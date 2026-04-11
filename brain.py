@@ -93,7 +93,6 @@ class DewdBrain:
         snapshot = len(self.history)
         working_messages = [_SYSTEM_MSG] + list(self.history)
 
-        # Handle image upload — auto-convert raw base64 to a proper data URI
         if image_b64 and not image_b64.startswith("data:"):
             image_b64 = f"data:image/jpeg;base64,{image_b64}"
 
@@ -126,9 +125,8 @@ class DewdBrain:
                 stream=True,
             )
 
-            # Accumulate streamed response
             accumulated_content = ""
-            accumulated_tool_calls = {}  # index -> {id, name, arguments}
+            accumulated_tool_calls = {}
             finish_reason = None
 
             for chunk in stream:
@@ -165,7 +163,6 @@ class DewdBrain:
             if finish_reason == "tool_calls" and accumulated_tool_calls:
                 tool_iteration += 1
 
-                # Add assistant message with tool_calls
                 tool_calls_payload = [
                     {
                         "id": tc["id"],
@@ -180,7 +177,6 @@ class DewdBrain:
                     "tool_calls": tool_calls_payload,
                 })
 
-                # Execute each tool and add results
                 for tc in accumulated_tool_calls.values():
                     try:
                         args = json.loads(tc["arguments"] or "{}")
@@ -194,7 +190,7 @@ class DewdBrain:
                     })
                 continue
 
-            break  # unexpected finish_reason
+            break
 
         if full_response:
             self._add_message("assistant", full_response)

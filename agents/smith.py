@@ -30,7 +30,7 @@ from config import (
 )
 from notify import send_alert
 from agents.common import get_logger as _get_logger
-from agents.common import atomic_write, write_status, write_error, ET as _ET
+from agents.common import atomic_write, write_status, write_error, ET_TZ as _ET
 
 log = _get_logger(__name__)
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 DEWD Mission Control — served at http://<pi-ip>:8080
 Text-only dashboard: chat via browser → brain.py → Claude API.
@@ -49,16 +48,14 @@ _brain_lock = threading.Lock()
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-app.config["SESSION_PERMANENT"] = False  # session dies when browser closes
+app.config["SESSION_PERMANENT"] = False
 
 os.makedirs(AGENTS_DIR, exist_ok=True)
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
-_login_attempts: dict = {}   # ip -> [timestamp, ...]
-_LOGIN_MAX    = 5            # max attempts
-_LOGIN_WINDOW = 900          # 15-minute window in seconds
+_login_attempts: dict = {}
+_LOGIN_MAX    = 5
+_LOGIN_WINDOW = 900
 
 def _login_allowed(ip: str) -> bool:
     now = time.time()
@@ -132,7 +129,6 @@ def login_required(f):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not DASHBOARD_PASSWORD:
-        # No password configured — block all access rather than allow blank auth
         return render_template_string(_LOGIN_HTML, error=False, locked=True), 503
     if request.method == "POST":
         ip = request.remote_addr or "unknown"
@@ -140,7 +136,7 @@ def login():
             return render_template_string(_LOGIN_HTML, error=True, locked=True)
         if hmac.compare_digest(request.form.get("password", ""), DASHBOARD_PASSWORD):
             session["authenticated"] = True
-            _login_attempts.pop(ip, None)  # clear failed attempts on success
+            _login_attempts.pop(ip, None)
             return redirect("/")
         _login_record(ip)
         return render_template_string(_LOGIN_HTML, error=True, locked=False)
@@ -152,7 +148,6 @@ def logout():
     session.clear()
     return redirect("/login")
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _read_json(path, fallback):
     try:
@@ -162,20 +157,13 @@ def _read_json(path, fallback):
         return fallback
 
 
-# ── Background scheduler ──────────────────────────────────────────────────────
-
-# Schedules: Daymark 3x daily, Frontier 2x daily.
-# Frontier always triggers Smith on completion.
-# Smith fires the morning brief if it runs within SMITH_BRIEF_WINDOW.
-
 _AGENT_SCHEDULES = {
     "daymark":  frozenset(DAYMARK_HOURS),
     "frontier": frozenset(FRONTIER_HOURS),
-    # smith has no fixed schedule — always triggered by frontier
 }
 
 _scheduler_lock  = threading.Lock()
-_hours_ran: set  = set()   # tracks (agent, et_date, et_hour) already fired
+_hours_ran: set  = set()
 
 _running_agents      : set = set()
 _running_agents_lock       = threading.Lock()
@@ -189,7 +177,7 @@ def _scheduler_loop():
 
         with _scheduler_lock:
             global _hours_ran
-            _hours_ran = {k for k in _hours_ran if k[1] == et_date}  # prune old dates
+            _hours_ran = {k for k in _hours_ran if k[1] == et_date}
 
             for agent, schedule in _AGENT_SCHEDULES.items():
                 key = (agent, et_date, et_hour)
@@ -198,7 +186,7 @@ def _scheduler_loop():
                         already = agent in _running_agents
                         if not already:
                             _running_agents.add(agent)
-                            _hours_ran.add(key)  # only mark ran if we actually start it
+                            _hours_ran.add(key)
                     if not already:
                         threading.Thread(
                             target=_run_agent_guarded, args=(agent,), daemon=True
@@ -244,7 +232,6 @@ def _run_agent_guarded(name: str):
             _running_agents.discard(name)
 
 
-# On startup, reset any agent left in "running" state by a previously killed process.
 def _reset_stale_running():
     for name in ("daymark", "frontier", "smith"):
         path = os.path.join(AGENTS_DIR, f"{name}.json")
@@ -264,20 +251,16 @@ def _reset_stale_running():
 
 _reset_stale_running()
 
-# Start scheduler thread
 _sched_thread = threading.Thread(target=_scheduler_loop, daemon=True)
 _sched_thread.start()
 
 
-# ── Background stats loop ─────────────────────────────────────────────────────
-# Records hardware stats every 5 min and fires ntfy alerts on threshold breach.
-
 _STATS_HISTORY_FILE  = os.path.join(AGENTS_DIR, "stats_history.json")
-_STATS_INTERVAL      = 300   # seconds between recordings
-_STATS_MAX_ENTRIES   = 288   # 24h at 5-min intervals
+_STATS_INTERVAL      = 300
+_STATS_MAX_ENTRIES   = 288
 _ALERT_TEMP_C        = 80.0
 _ALERT_RAM_PCT       = 90.0
-_last_alert_ts: dict = {}    # alert_key -> last fired timestamp
+_last_alert_ts: dict = {}
 
 
 def _maybe_alert(key: str, title: str, body: str, cooldown_s: int = 3600):
@@ -311,7 +294,6 @@ def _stats_loop():
                 "disk_pct": stats.get("disk_pct"),
             }
 
-            # Append to rolling history
             try:
                 with open(_STATS_HISTORY_FILE) as f:
                     history = json.load(f)
@@ -324,7 +306,6 @@ def _stats_loop():
                 history = history[-_STATS_MAX_ENTRIES:]
             _atomic_write(_STATS_HISTORY_FILE, history)
 
-            # Threshold alerts
             temp_c = stats.get("temp_c") or 0.0
             if isinstance(temp_c, (int, float)) and temp_c >= _ALERT_TEMP_C:
                 _maybe_alert(
@@ -350,8 +331,6 @@ def _stats_loop():
 _stats_thread = threading.Thread(target=_stats_loop, daemon=True)
 _stats_thread.start()
 
-
-# ── API routes ────────────────────────────────────────────────────────────────
 
 @app.route("/api/status")
 @login_required
@@ -470,8 +449,6 @@ def api_gmail_delete(uid):
     return jsonify(_delete_gmail(uid))
 
 
-# ── Calendar ──────────────────────────────────────────────────────────────────
-
 import uuid as _uuid
 
 def _load_calendar() -> list:
@@ -559,8 +536,6 @@ def api_stream():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# ── Agent API routes ──────────────────────────────────────────────────────────
-
 _KNOWN_AGENTS = ("daymark", "frontier", "smith")
 
 
@@ -571,12 +546,10 @@ def api_agent_result(name):
         return jsonify({"error": "unknown agent"}), 404
     path = os.path.join(AGENTS_DIR, f"{name}.json")
     data = _read_json(path, {"status": "never_run", "report": None})
-    # _running_agents is the authoritative live state — always wins over JSON
     with _running_agents_lock:
         if name in _running_agents:
             data["status"] = "running"
         elif data.get("status") == "running":
-            # JSON says running but no active run in memory — process was killed mid-run
             data["status"] = "error"
     return jsonify(data)
 
@@ -673,7 +646,6 @@ def api_agent_run_stream(name):
             for event in stream_run():
                 q.put(event)
             q.put({"done": True})
-            # Frontier always triggers Smith regardless of browser state
             if name == "frontier":
                 with _running_agents_lock:
                     already = "smith" in _running_agents
@@ -698,7 +670,6 @@ def api_agent_run_stream(name):
             try:
                 item = q.get(timeout=30)
             except _queue.Empty:
-                # keepalive comment keeps the connection alive on slow agents
                 yield ": keepalive\n\n"
                 continue
             if item is _SENTINEL:
@@ -708,8 +679,6 @@ def api_agent_run_stream(name):
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-
-# ── Notes ─────────────────────────────────────────────────────────────────────
 
 _NOTES_FILE = os.path.join(DATA_DIR, "notes.md")
 
@@ -725,7 +694,7 @@ def api_notes_get():
 @login_required
 def api_notes_post():
     data = request.get_json(silent=True) or {}
-    content = data.get("content", "")[:500_000]  # 500 KB cap
+    content = data.get("content", "")[:500_000]
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp = _NOTES_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -733,8 +702,6 @@ def api_notes_post():
     os.replace(tmp, _NOTES_FILE)
     return jsonify({"ok": True})
 
-
-# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 _DASHBOARD_TMPL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard_template.html")
 
@@ -756,7 +723,6 @@ def api_health():
 
 @app.route("/favicon.ico")
 def favicon():
-    # Inline 1×1 transparent ICO — stops 404 spam in logs
     ICO = (b"\x00\x00\x01\x00\x01\x00\x01\x01\x00\x00\x01\x00\x18\x00"
            b"\x30\x00\x00\x00\x16\x00\x00\x00\x28\x00\x00\x00\x01\x00"
            b"\x00\x00\x02\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00"

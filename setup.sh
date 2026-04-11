@@ -26,7 +26,6 @@ mkdir -p "$DEWD_DIR/data/agents"
 [ -f "$DEWD_DIR/data/status.json"       ] || echo '{"state":"standby","ts":""}' > "$DEWD_DIR/data/status.json"
 [ -f "$DEWD_DIR/data/conversation.json" ] || echo '[]'                           > "$DEWD_DIR/data/conversation.json"
 [ -f "$DEWD_DIR/data/calendar.json"     ] || echo '[]'                           > "$DEWD_DIR/data/calendar.json"
-[ -f "$DEWD_DIR/data/notes.json"        ] || echo '""'                           > "$DEWD_DIR/data/notes.json"
 
 # ── Environment file ─────────────────────────────────────────────────────────
 echo "[3/3] Checking environment..."

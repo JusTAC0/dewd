@@ -125,8 +125,7 @@ def fetch_body(uid: str) -> dict:
         return {"error": "invalid uid"}
     mail = None
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        mail = _connect()
         mail.select("INBOX", readonly=True)
         _, data = mail.fetch(uid.encode(), "(RFC822)")
         if not data or not data[0]:
@@ -183,8 +182,7 @@ def delete_message(uid: str) -> dict:
         return {"error": "invalid uid"}
     mail = None
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        mail = _connect()
         mail.select("INBOX")
         mail.copy(uid.encode(), "[Gmail]/Trash")
         mail.store(uid.encode(), "+FLAGS", "\\Deleted")

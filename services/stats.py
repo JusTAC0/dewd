@@ -16,7 +16,6 @@ def get_stats() -> dict:
     """Return a dict of current Pi hardware metrics."""
     stats: dict = {}
 
-    # CPU temperature
     try:
         temp = subprocess.check_output(["vcgencmd", "measure_temp"], text=True).strip()
         stats["temp"] = temp.replace("temp=", "")
@@ -28,7 +27,6 @@ def get_stats() -> dict:
         stats["temp"] = "—"
         stats["temp_c"] = None
 
-    # RAM
     try:
         with open("/proc/meminfo") as f:
             mem = {l.split(":")[0]: int(l.split()[1]) for l in f}
@@ -40,7 +38,6 @@ def get_stats() -> dict:
     except Exception:
         stats["ram_used_mb"] = stats["ram_total_mb"] = stats["ram_pct"] = 0
 
-    # Disk
     try:
         du = shutil.disk_usage("/")
         stats["disk_used_gb"]  = round(du.used  / 1e9, 1)
@@ -49,7 +46,6 @@ def get_stats() -> dict:
     except Exception:
         stats["disk_used_gb"] = stats["disk_total_gb"] = stats["disk_pct"] = 0
 
-    # CPU usage (sampled over 300ms)
     try:
         with open("/proc/stat") as f:
             c0 = f.readline().split()
@@ -63,7 +59,6 @@ def get_stats() -> dict:
     except Exception:
         stats["cpu_pct"] = 0
 
-    # Uptime
     try:
         with open("/proc/uptime") as f:
             secs = float(f.read().split()[0])
@@ -72,7 +67,6 @@ def get_stats() -> dict:
     except Exception:
         stats["uptime"] = "—"
 
-    # Network interfaces
     try:
         with open("/proc/net/dev") as f:
             lines = f.readlines()[2:]
