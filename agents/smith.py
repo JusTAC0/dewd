@@ -1,8 +1,6 @@
 """
 DEWD Smith Agent
 
-
-log = _get_logger(__name__)
 DEWD's autonomous senior engineer. Audits the codebase, finds bugs, patches
 them through a full agentic tool loop, verifies each fix via py_compile and
 cascade import checks, then ships to live.
@@ -28,10 +26,13 @@ import anthropic
 from config import (
     ANTHROPIC_API_KEY, DATA_DIR, AGENTS_DIR,
     SMITH_LOG_PATH, SMITH_BRIEF_WINDOW,
-    OWNER_NAME, NTFY_URL, NTFY_TOPIC,
+    OWNER_NAME,
 )
+from notify import send_alert
 from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
+
+log = _get_logger(__name__)
 
 HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
@@ -39,19 +40,15 @@ OUTPUT_FILE  = os.path.join(AGENTS_DIR, "smith.json")
 SEEN_FILE    = os.path.join(AGENTS_DIR, "seen.json")
 PROJECT_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Use venv Python for subprocess calls so all DEWD deps are importable
 _VENV_PY = os.path.join(PROJECT_DIR, "venv", "bin", "python3")
 PYTHON_BIN = _VENV_PY if os.path.exists(_VENV_PY) else "python3"
 
-# Directories and files to exclude from scanning
 EXCLUDE_DIRS  = {"venv", "__pycache__", ".git", ".mypy_cache", "node_modules", "data"}
-EXCLUDE_FILES = {"smith.py"}   # Smith never audits itself
+EXCLUDE_FILES = {"smith.py"}
 
-MAX_ATTEMPTS_PER_FINDING = 3   # Max write attempts per finding before giving up
-MAX_TOOL_ITERATIONS      = 25  # Hard cap on agentic loop iterations per finding
+MAX_ATTEMPTS_PER_FINDING = 3
+MAX_TOOL_ITERATIONS      = 25
 
-
-# ── seen.json helpers ─────────────────────────────────────────────────────────
 
 def _load_seen() -> dict:
     try:
@@ -91,8 +88,6 @@ def _update_fingerprints(source_files: dict, seen: dict):
     _save_seen(seen)
 
 
-# ── File scanner ──────────────────────────────────────────────────────────────
-
 def _scan_project_files() -> dict:
     """Return {relative_path: content} for all scannable .py files."""
     files = {}
@@ -115,8 +110,6 @@ def _resolve_path(path: str) -> str:
     """Resolve relative-to-project-root or absolute path."""
     return path if os.path.isabs(path) else os.path.join(PROJECT_DIR, path)
 
-
-# ── Phase 1: Haiku audit ──────────────────────────────────────────────────────
 
 _PHASE1_SYSTEM = [{
     "type": "text",
@@ -211,8 +204,6 @@ Sort by rank_score descending. Only real bugs."""
         log.error(f"  [smith/phase1] JSON parse error: {e} — raw: {raw[:200]}")
         return []
 
-
-# ── Phase 2 tools ─────────────────────────────────────────────────────────────
 
 SMITH_TOOLS = [
     {
@@ -373,8 +364,6 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
     return f"ERROR: Unknown tool '{tool_name}'"
 
 
-# ── Cascade check ─────────────────────────────────────────────────────────────
-
 def _run_cascade_check(patched_path: str) -> tuple:
     """
     py_compile the patched file, then compile every file that imports from it.
@@ -426,8 +415,6 @@ def _restore_backup(path: str):
         except Exception as e:
             log.error(f"  [smith] backup restore failed: {e}")
 
-
-# ── Phase 2: Sonnet engineer agentic loop ─────────────────────────────────────
 
 _PHASE2_SYSTEM = [{
     "type": "text",
@@ -556,8 +543,6 @@ def phase2_fix(finding: dict) -> dict:
     return _make_result(status, finding, final_text or "No final message from engineer.", patched_files)
 
 
-# ── Final import test ─────────────────────────────────────────────────────────
-
 def _final_import_test() -> tuple:
     """Verify dewd_web still imports cleanly after all patches."""
     try:
@@ -575,8 +560,6 @@ def _final_import_test() -> tuple:
     except Exception as e:
         return False, str(e)
 
-
-# ── Desktop log ───────────────────────────────────────────────────────────────
 
 def _append_log(result: dict, finding: dict):
     now_et = datetime.now(_ET)
@@ -600,8 +583,6 @@ def _append_log(result: dict, finding: dict):
         log.error(f"  [smith] log append failed: {e}")
 
 
-# ── Morning brief ─────────────────────────────────────────────────────────────
-
 def _is_morning_run() -> bool:
     now_et = datetime.now(_ET)
     return SMITH_BRIEF_WINDOW[0] <= now_et.hour < SMITH_BRIEF_WINDOW[1]
@@ -610,19 +591,16 @@ def _is_morning_run() -> bool:
 def _build_morning_brief(fixed: list, failed: list, import_ok: bool) -> str:
     lines = [f"Good morning, {OWNER_NAME}. DEWD morning brief.\n\n"]
 
-    # Daymark top stories
     try:
         with open(os.path.join(AGENTS_DIR, "daymark.json")) as f:
             daymark = json.load(f)
         report = daymark.get("report", "")
         sections = report.split("##")
-        # Pull weather + top world stories (first two sections)
         for s in sections[1:3]:
             lines.append("##" + s.strip() + "\n\n")
     except Exception:
         lines.append("## WORLD\nDaymark data unavailable.\n\n")
 
-    # Frontier top picks
     lines.append("## FRONTIER PICKS\n")
     try:
         with open(os.path.join(AGENTS_DIR, "frontier.json")) as f:
@@ -640,7 +618,6 @@ def _build_morning_brief(fixed: list, failed: list, import_ok: bool) -> str:
     except Exception:
         lines.append("Frontier data unavailable.\n")
 
-    # Smith results
     lines.append("\n## SMITH\n")
     if fixed:
         lines.append(f"{len(fixed)} fix(es) shipped:\n")
@@ -656,7 +633,6 @@ def _build_morning_brief(fixed: list, failed: list, import_ok: bool) -> str:
     import_status = "PASS" if import_ok else "FAIL — check smith.json"
     lines.append(f"\nImport test: **{import_status}**\n")
 
-    # Pi temperature
     try:
         temp_r = subprocess.run(
             ["vcgencmd", "measure_temp"],
@@ -670,23 +646,6 @@ def _build_morning_brief(fixed: list, failed: list, import_ok: bool) -> str:
     return "".join(lines)
 
 
-def _send_ntfy(title: str, body: str, priority: str = "default"):
-    if not NTFY_TOPIC:
-        return
-    try:
-        import requests as _req
-        _req.post(
-            f"{NTFY_URL}/{NTFY_TOPIC}",
-            data=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority},
-            timeout=10,
-        )
-    except Exception as e:
-        log.error(f"  [smith] ntfy failed: {e}")
-
-
-# ── Entry points ──────────────────────────────────────────────────────────────
-
 def run() -> dict:
     os.makedirs(AGENTS_DIR, exist_ok=True)
     write_status(OUTPUT_FILE, "running")
@@ -695,7 +654,6 @@ def run() -> dict:
     failed_results = []
 
     try:
-        # Phase 1 — Haiku audit
         log.info("  [smith] scanning project files…")
         source_files = _scan_project_files()
         seen         = _load_seen()
@@ -718,7 +676,6 @@ def run() -> dict:
             atomic_write(OUTPUT_FILE, result)
             return result
 
-        # Phase 2 — Sonnet engineer, one finding at a time, no cap
         for i, finding in enumerate(findings, 1):
             log.info(f"  [smith] phase 2 [{i}/{len(findings)}] — {finding['title']}")
             fix_result = phase2_fix(finding)
@@ -735,21 +692,21 @@ def run() -> dict:
             _append_log(fix_result, finding)
             time.sleep(1)
 
-        # Update fingerprints after all patches
         _update_fingerprints(_scan_project_files(), seen)
 
-        # Final import test
         log.info("  [smith] running final import test…")
         import_ok, import_err = _final_import_test()
         log.error(f"  [smith] import test: {'✓ PASS' if import_ok else '✗ FAIL — ' + import_err}")
 
-        # Morning brief (if within brief window)
         brief = ""
         if _is_morning_run():
             log.info("  [smith] building morning brief…")
             brief = _build_morning_brief(fixed_results, failed_results, import_ok)
             date_str = datetime.now(_ET).strftime("%b %d")
-            _send_ntfy(f"DEWD Morning Brief — {date_str}", brief)
+            send_alert(f"DEWD Morning Brief — {date_str}", brief[:4000])
+        elif fixed_results:
+            files = ", ".join(r["file"] for r in fixed_results[:3])
+            send_alert(f"Smith — {len(fixed_results)} fix(es)", f"Patched: {files}")
 
         result = {
             "status":      "ok",
@@ -763,6 +720,7 @@ def run() -> dict:
 
     except Exception as e:
         log.error(f"  [smith] run failed: {e}")
+        send_alert("Smith Error", str(e), priority="high")
         result = {
             "status":      "error",
             "ran_at":      started_at,
@@ -833,7 +791,10 @@ def stream_run():
             yield {"msg": "Building morning brief…"}
             brief = _build_morning_brief(fixed_results, failed_results, import_ok)
             date_str = datetime.now(_ET).strftime("%b %d")
-            _send_ntfy(f"DEWD Morning Brief — {date_str}", brief)
+            send_alert(f"DEWD Morning Brief — {date_str}", brief[:4000])
+        elif fixed_results:
+            files = ", ".join(r["file"] for r in fixed_results[:3])
+            send_alert(f"Smith — {len(fixed_results)} fix(es)", f"Patched: {files}")
 
         atomic_write(OUTPUT_FILE, {
             "status":      "ok",
@@ -847,6 +808,7 @@ def stream_run():
 
     except Exception as e:
         write_error(OUTPUT_FILE, e)
+        send_alert("Smith Error", str(e), priority="high")
         yield {"error": str(e)}
 
 

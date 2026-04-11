@@ -1,8 +1,6 @@
 """
 DEWD Frontier Agent
 
-
-log = _get_logger(__name__)
 Tech acquisition scout. Hunts the tech landscape for what DEWD could
 potentially absorb — new libraries, Claude API capabilities, tools,
 techniques, and frameworks gaining traction.
@@ -27,6 +25,9 @@ import anthropic
 from config import ANTHROPIC_API_KEY, DATA_DIR, FRONTIER_HOURS, AGENTS_DIR
 from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
+from notify import send_alert
+
+log = _get_logger(__name__)
 
 HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
@@ -38,7 +39,6 @@ HEADERS      = {
     "Accept":     "application/vnd.github+json",
 }
 
-# ── Source definitions ────────────────────────────────────────────────────────
 
 DEWD_PACKAGES = [
     "anthropic", "flask", "requests", "python-dotenv",
@@ -70,34 +70,28 @@ HN_QUERIES = [
 ]
 
 TECH_FEEDS = [
-    # Research
     ("arXiv cs.AI",          "https://arxiv.org/rss/cs.AI",                                    6),
     ("Hugging Face Blog",    "https://huggingface.co/blog/feed.xml",                            5),
     ("Simon Willison",       "https://simonwillison.net/atom/everything/",                      6),
     ("Fast.ai Blog",         "https://www.fast.ai/index.xml",                                   4),
     ("Papers With Code",     "https://paperswithcode.com/rss.xml",                              5),
-    # AI Labs
     ("Anthropic Blog",       "https://www.anthropic.com/blog.rss",                              6),
     ("OpenAI Blog",          "https://openai.com/blog/rss.xml",                                 5),
     ("Google AI Blog",       "https://blog.research.google/feeds/posts/default",               5),
     ("Meta AI Blog",         "https://ai.meta.com/blog/feed/",                                  5),
-    # Journalism
     ("Ars Technica",         "http://feeds.arstechnica.com/arstechnica/index",                  6),
     ("MIT Tech Review",      "https://www.technologyreview.com/feed/",                          5),
     ("Wired",                "https://www.wired.com/feed/rss",                                  5),
     ("The Verge",            "https://www.theverge.com/rss/index.xml",                         5),
     ("IEEE Spectrum",        "https://spectrum.ieee.org/feeds/feed.rss",                        4),
     ("TLDR Tech",            "https://tldr.tech/api/rss/tech",                                  6),
-    # Pi / ARM / Hardware
     ("Raspberry Pi Blog",    "https://www.raspberrypi.com/news/feed/",                          6),
     ("Jeff Geerling",        "https://www.jeffgeerling.com/blog.xml",                           4),
     ("CNX Software",         "https://www.cnx-software.com/feed/",                              5),
     ("Phoronix",             "https://www.phoronix.com/rss.php",                               5),
-    # Self-hosting
     ("Home Assistant Blog",  "https://www.home-assistant.io/blog.xml",                         5),
     ("Tailscale Blog",       "https://tailscale.com/blog/index.xml",                           4),
     ("Console.dev",          "https://console.dev/tools/rss.xml",                               6),
-    # Dev
     ("GitHub Changelog",     "https://github.blog/changelog/feed/",                             6),
     ("Changelog.com",        "https://changelog.com/feed",                                      5),
     ("PyCoder's Weekly",     "https://pycoders.com/feed",                                       5),
@@ -111,8 +105,6 @@ TECH_SUBREDDITS = [
     "programming", "opensource", "ClaudeAI", "homelab", "Python",
 ]
 
-
-# ── seen.json helpers ─────────────────────────────────────────────────────────
 
 def _load_seen() -> dict:
     try:
@@ -130,8 +122,6 @@ def _url_fingerprint(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
 
-# ── Manifest loader ───────────────────────────────────────────────────────────
-
 def _load_manifest() -> dict:
     try:
         with open(MANIFEST_FILE) as f:
@@ -140,8 +130,6 @@ def _load_manifest() -> dict:
         log.error(f"  [frontier] manifest load failed: {e}")
         return {}
 
-
-# ── RSS fetcher ───────────────────────────────────────────────────────────────
 
 def _fetch_rss(name: str, url: str, limit: int = 6) -> list[dict]:
     try:
@@ -173,8 +161,6 @@ def _fetch_rss(name: str, url: str, limit: int = 6) -> list[dict]:
         log.info(f"  [frontier/rss] {name}: {e}")
         return []
 
-
-# ── Data gathering ────────────────────────────────────────────────────────────
 
 def _gather_rss() -> list[dict]:
     items = []
@@ -208,7 +194,6 @@ def _gather_github() -> list[dict]:
             time.sleep(0.5)
         except Exception as e:
             log.info(f"  [frontier/gh] {query}: {e}")
-    # Deduplicate by URL
     seen_urls, deduped = set(), []
     for item in results:
         if item["url"] not in seen_urls:
@@ -330,8 +315,6 @@ def gather() -> dict:
     }
 
 
-# ── Scoring prompt ────────────────────────────────────────────────────────────
-
 _SYSTEM = [{
     "type": "text",
     "text": (
@@ -438,8 +421,6 @@ Only include items that score 6 or above (or are security/watchlist).
 Be selective. Quality over quantity."""
 
 
-# ── Claude calls ──────────────────────────────────────────────────────────────
-
 def analyze(data: dict) -> dict:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     msg = client.messages.create(
@@ -449,13 +430,11 @@ def analyze(data: dict) -> dict:
         messages=[{"role": "user", "content": _build_prompt(data, data["seen"])}],
     )
     raw = msg.content[0].text.strip()
-    # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Response was likely truncated — return whatever partial data we can extract
         return {"opportunities": [], "package_updates": []}
 
 
@@ -481,8 +460,6 @@ def analyze_stream(data: dict):
         return {}
 
 
-# ── seen.json updater ─────────────────────────────────────────────────────────
-
 def _update_seen(seen: dict, result: dict):
     """Record everything surfaced this run into seen.json."""
     now = datetime.now(timezone.utc).isoformat()
@@ -503,8 +480,6 @@ def _update_seen(seen: dict, result: dict):
     _save_seen(seen)
 
 
-# ── Scheduling ────────────────────────────────────────────────────────────────
-
 def _write_status(state: str):
     os.makedirs(AGENTS_DIR, exist_ok=True)
     write_status(OUTPUT_FILE, state)
@@ -521,8 +496,6 @@ def _next_run() -> str:
     tomorrow = today + timedelta(days=1)
     return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hours[0], 0, 0, tzinfo=_ET).isoformat()
 
-
-# ── Entry points ──────────────────────────────────────────────────────────────
 
 def stream_run():
     """Generator — yields progress/chunk dicts for SSE streaming."""
@@ -561,8 +534,17 @@ def stream_run():
             "next_run":      _next_run(),
         }
         atomic_write(OUTPUT_FILE, output)
+        opps     = output.get("opportunities", [])
+        security = [o for o in opps if o.get("is_security")]
+        if security:
+            body = "\n".join(f"- {o['name']}: {o['what_it_is']}" for o in security)
+            send_alert("Frontier — Security Alert", body, priority="urgent")
+        elif opps:
+            body = "\n".join(f"[{o['score']}] {o['name']} — {o['why_dewd']}" for o in opps[:3])
+            send_alert(f"Frontier — {len(opps)} find(s)", body)
     except Exception as e:
         write_error(OUTPUT_FILE, e)
+        send_alert("Frontier Error", str(e), priority="high")
         yield {"error": str(e)}
 
 
@@ -582,6 +564,14 @@ def run() -> dict:
             "package_updates": result.get("package_updates", []),
             "next_run":        _next_run(),
         }
+        opps     = output["opportunities"]
+        security = [o for o in opps if o.get("is_security")]
+        if security:
+            body = "\n".join(f"- {o['name']}: {o['what_it_is']}" for o in security)
+            send_alert("Frontier — Security Alert", body, priority="urgent")
+        elif opps:
+            body = "\n".join(f"[{o['score']}] {o['name']} — {o['why_dewd']}" for o in opps[:3])
+            send_alert(f"Frontier — {len(opps)} find(s)", body)
     except Exception as e:
         output = {
             "status":   "error",
@@ -590,6 +580,7 @@ def run() -> dict:
             "report":   f"Frontier failed: {e}",
             "next_run": _next_run(),
         }
+        send_alert("Frontier Error", str(e), priority="high")
     atomic_write(OUTPUT_FILE, output)
     return output
 

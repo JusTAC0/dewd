@@ -1,8 +1,6 @@
 """
 DEWD Daymark Agent
 
-
-log = _get_logger(__name__)
 World awareness agent. Covers news, culture, sports, business, science,
 entertainment and trending topics. No tech agenda, no DEWD agenda.
 Pure world orientation — what is happening on Earth right now.
@@ -26,17 +24,18 @@ from config import (
 )
 from agents.common import get_logger as _get_logger
 from agents.common import atomic_write, write_status, write_error, ET as _ET
+from notify import send_alert
 
 import anthropic
+
+log = _get_logger(__name__)
 
 SONNET_MODEL = "claude-sonnet-4-6"
 AGENTS_DIR   = os.path.join(DATA_DIR, "agents")
 OUTPUT_FILE  = os.path.join(AGENTS_DIR, "daymark.json")
 HEADERS      = {"User-Agent": "dewd-daymark/1.0 (personal research bot)"}
 
-# ── Source definitions ────────────────────────────────────────────────────────
 
-# RSS feeds by category: (name, url, limit)
 NEWS_FEEDS = [
     ("AP News",           "https://rsshub.app/apnews/topics/apf-topnews",             8),
     ("Reuters",           "https://feeds.reuters.com/reuters/topNews",                 8),
@@ -90,8 +89,6 @@ WORLD_SUBREDDITS = [
 ]
 
 
-# ── RSS fetcher ───────────────────────────────────────────────────────────────
-
 def _fetch_rss(name: str, url: str, limit: int = 8) -> list[dict]:
     try:
         r = requests.get(url, timeout=12, headers=HEADERS)
@@ -141,8 +138,6 @@ def _gather_feeds(feed_list: list[tuple]) -> list[dict]:
     return items
 
 
-# ── Reddit ────────────────────────────────────────────────────────────────────
-
 def _fetch_subreddit(sub: str, limit: int = 25) -> list[dict]:
     url = f"https://www.reddit.com/r/{sub}/hot.json?limit={limit}"
     try:
@@ -176,8 +171,6 @@ def _gather_reddit() -> list[dict]:
     return posts[:40]
 
 
-# ── Wikipedia trending ────────────────────────────────────────────────────────
-
 def _fetch_wikipedia_trending() -> list[dict]:
     try:
         now = datetime.now(timezone.utc)
@@ -201,8 +194,6 @@ def _fetch_wikipedia_trending() -> list[dict]:
         return []
 
 
-# ── Google Trends ─────────────────────────────────────────────────────────────
-
 def _fetch_google_trends() -> list[str]:
     try:
         from pytrends.request import TrendReq
@@ -213,8 +204,6 @@ def _fetch_google_trends() -> list[str]:
         log.info(f"  [daymark/trends] {e}")
         return []
 
-
-# ── Weather ───────────────────────────────────────────────────────────────────
 
 def _fetch_weather() -> str:
     try:
@@ -230,8 +219,6 @@ def _fetch_weather() -> str:
         log.info(f"  [daymark/weather] {e}")
         return "Weather unavailable"
 
-
-# ── Data gathering ────────────────────────────────────────────────────────────
 
 def gather() -> dict:
     log.info("  [daymark] gathering news feeds…")
@@ -268,8 +255,6 @@ def gather() -> dict:
         "weather":       weather,
     }
 
-
-# ── Prompt ────────────────────────────────────────────────────────────────────
 
 _SYSTEM = [{
     "type": "text",
@@ -375,8 +360,6 @@ def analyze_stream(data: dict):
             yield text
 
 
-# ── Scheduling helpers ────────────────────────────────────────────────────────
-
 def _write_status(state: str):
     os.makedirs(AGENTS_DIR, exist_ok=True)
     write_status(OUTPUT_FILE, state)
@@ -400,8 +383,6 @@ def is_morning_chain_run() -> bool:
     return now_et.hour == MORNING_CHAIN_HOUR
 
 
-# ── Entry points ──────────────────────────────────────────────────────────────
-
 def stream_run():
     """Generator — yields progress/chunk dicts for SSE streaming."""
     os.makedirs(AGENTS_DIR, exist_ok=True)
@@ -424,8 +405,12 @@ def stream_run():
             "next_run":  _next_run(),
         }
         atomic_write(OUTPUT_FILE, result)
+        top = result.get("top_stories", [{}])[0].get("title", "No top story")
+        date_str = datetime.now(_ET).strftime("%b %d %I%p").lower()
+        send_alert(f"Daymark — {date_str}", f"{result['weather']}\n\n{top}")
     except Exception as e:
         write_error(OUTPUT_FILE, e)
+        send_alert("Daymark Error", str(e), priority="high")
         yield {"error": str(e)}
 
 
@@ -445,6 +430,9 @@ def run() -> dict:
             "top_stories": data["news"][:8],
             "next_run":    _next_run(),
         }
+        top = data["news"][0]["title"] if data["news"] else "No top story"
+        date_str = datetime.now(_ET).strftime("%b %d %I%p").lower()
+        send_alert(f"Daymark — {date_str}", f"{data['weather']}\n\n{top}")
     except Exception as e:
         result = {
             "status":   "error",
@@ -453,6 +441,7 @@ def run() -> dict:
             "report":   f"Daymark failed: {e}",
             "next_run": _next_run(),
         }
+        send_alert("Daymark Error", str(e), priority="high")
     atomic_write(OUTPUT_FILE, result)
     return result
 
